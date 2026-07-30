@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Neopets SDBCrawler
-// @version      2.2.0
+// @version      2.3.0
 // @author       TamperPanda
 // @description  Highly Customizable SDB Management tool.  
 // @match        https://www.neopets.com/safetydeposit.phtml*
