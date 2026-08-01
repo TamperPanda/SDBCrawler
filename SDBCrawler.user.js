@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Neopets SDBCrawler
-// @version      2.3.0
+// @version      2.3.1
 // @author       TamperPanda
-// @description  Highly Customizable SDB Management tool.  
+// @description  SDB logging, pricing and management tool.
 // @match        https://www.neopets.com/safetydeposit.phtml*
-// @icon         https://cdn9.neopets.com/app_icons/816098ae647bce91fb4ba4590b0f3e6b.png
+// @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMDAgMjAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM3YzZjZmYiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMyMmQzZWUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cGF0aCBmaWxsPSJ1cmwoI2cpIiBkPSJNMTk5Ljk4IDEwMkguMDJhMTAwLjAxNyAxMDAuMDE3IDAgMDAzLjM5MyAyNGgxOTMuMTc0YTEwMC4wMjggMTAwLjAyOCAwIDAwMy4zOTMtMjR6TTE5NS40MjIgMTMwSDQuNTc4YTk5LjQ0OCA5OS40NDggMCAwMDguOCAyMGgxNzMuMjQ0YTk5LjQ1IDk5LjQ1IDAgMDA4LjgtMjB6TTE4NC4xODEgMTU0SDE1LjgxOWExMDAuNDc0IDEwMC40NzQgMCAwMDEyLjc2NyAxNmgxNDIuODI4YTEwMC40MzEgMTAwLjQzMSAwIDAwMTIuNzY3LTE2ek0xNjcuMjYyIDE3NEgzMi43MzhhMTAwLjI2NyAxMDAuMjY3IDAgMDAxOS43MjQgMTRoOTUuMDc2YTEwMC4yODkgMTAwLjI4OSAwIDAwMTkuNzI0LTE0ek0xMzkuMjU3IDE5Mkg2MC43NDNjMTIuMDUyIDUuMTUgMjUuMzIyIDggMzkuMjU3IDggMTMuOTM1IDAgMjcuMjA1LTIuODUgMzkuMjU3LTh6TTE5OS45OCA5OEguMDJhOTkuNzUzIDk5Ljc1MyAwIDAxNS41NTMtMzFoMTg4Ljg1NGE5OS43MjMgOTkuNzIzIDAgMDE1LjU1MyAzMXpNMTkyLjkzMiA2M0MxNzguMjIzIDI2LjA4NyAxNDIuMTU4IDAgMTAwIDBTMjEuNzc3IDI2LjA4NyA3LjA2OCA2M2gxODUuODY0eiIvPjwvc3ZnPg==
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
@@ -41,6 +41,8 @@
         itemdbChunk: 1000,
         itemdbDelay: [1200, 1500],
         itemdbRetries: 8,
+        itemdbMaxWait: 180000,
+
         cacheDays: 2,
         rowH: 44,
         overscan: 8,
@@ -305,7 +307,7 @@
             } catch (err) {
                 deadKeys.add(key);
                 console.warn(`[SDB] storage write failed for "${key}" — not retrying this session:`, err);
-                if (typeof toast === 'function') toast('Storage full — some data was not saved', true);
+                if (typeof toast === 'function') toast('Storage full. Some data was not saved', true);
             }
         },
         del(key) { GM_deleteValue(key); },
@@ -333,6 +335,9 @@
         ['full',    'Full'],
     ];
     const ITEMDB_INTENTS = INTENT_LABELS.map(([v]) => v);
+
+    const ENRICH_BLOCKLIST = new Set([86984]);
+    const isBlocked = (id) => ENRICH_BLOCKLIST.has(Number(id));
 
     const clampInt = (v, lo, hi, dflt) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt; };
     const itemdbCfg = {
@@ -422,6 +427,7 @@
     const normNcMode = (m) => (NC_MODES.includes(m) ? m : 'all');
 
     let itemdbUseV1 = false;
+    let itemdbCooldownUntil = 0;
     let v2FailCount = 0;
     let enrichFailedIds = 0;
 
@@ -563,7 +569,7 @@
     function saveHidden() { Store.set('sdb_hidden_keys', [...hiddenKeys]); }
 
     // ── Display options ────────────────────────────────────────
-    let shortValues = Store.get('sdb_short_values', false) === true;
+    let shortValues = Store.get('sdb_short_values', true) !== false;
 
     // ── Card colorization ──────────────────────────────────────
     let cardColorize = Store.get('sdb_card_colorize', false) === true;
@@ -662,12 +668,12 @@
             data: JSON.stringify({ page, per_page: CFG.perPage, search: '', category: '', sort: '', view_filter: filter, _ref_ck: refCk }),
             timeout: 30000,
         });
-        if (res.status === 429) throw new Error('Neopets is rate-limiting — raise the scan delay and retry');
+        if (res.status === 429) throw new Error('Neopets is rate-limiting. Raise the scan delay and retry');
         if (res.status !== 200) throw new Error(`SDB HTTP ${res.status}`);
         let json;
         try { json = JSON.parse(res.responseText); }
         catch {
-            if (/login|templateLoginPopupIntercept/i.test(res.responseText || '')) throw new Error('Not logged in — log into Neopets and rescan.');
+            if (/login|templateLoginPopupIntercept/i.test(res.responseText || '')) throw new Error('Not logged in. Log into Neopets and rescan.');
             throw new Error('SDB returned a non-JSON page');
         }
         if (!json.success) throw new Error(json.error || 'API error');
@@ -856,7 +862,15 @@
         return out;
     }
 
+    function retryAfterMs(res) {
+        const m = /^\s*retry-after:\s*(\d+)/im.exec(res.responseHeaders || '');
+        if (!m) return null;
+        const secs = Number(m[1]);
+        return Number.isFinite(secs) ? Math.min(3600000, Math.max(1000, secs * 1000)) : null;
+    }
+
     async function fetchItemdbChunk(ids, cache, intent = itemdbCfg.intent) {
+        if (Date.now() < itemdbCooldownUntil) return false;
         let rateLimits = 0;
         for (let attempt = 1; attempt <= CFG.itemdbRetries; attempt++) {
             if (state.stopRequested) return true;
@@ -873,6 +887,23 @@
                 });
                 if (res.status === 429) {
                     if (++rateLimits > 20) throw new Error('ItemDB rate limit persisted');
+                    const ra = retryAfterMs(res);
+                    if (ra != null) {
+                        let serverMsg = '';
+                        try { serverMsg = JSON.parse(res.responseText || '{}').message || ''; } catch {  }
+                        if (ra > CFG.itemdbMaxWait) {
+                            itemdbCooldownUntil = Date.now() + ra;
+                            const mins = Math.max(1, Math.round(ra / 60000));
+                            const note = serverMsg || `ItemDB rate limit. Pricing paused, try again in about ${mins} min`;
+                            emit('status', { text: note });
+                            if (typeof toast === 'function') toast(note, true);
+                            return false;
+                        }
+                        emit('status', { text: serverMsg || `Rate limited, retrying in ${Math.round(ra / 1000)}s` });
+                        await sleep(ra);
+                        attempt--;
+                        continue;
+                    }
                     const wait = randInt(10000, 15000);
                     emit('status', { text: `Rate limited, retrying in ${Math.round(wait / 1000)}s` });
                     await sleep(wait);
@@ -1044,7 +1075,7 @@
                 const chunkSize = Math.max(1, itemdbCfg.chunk);
                 for (; enrichScanned < state.items.length; enrichScanned++) {
                     const it = state.items[enrichScanned];
-                    if (it.id == null) continue;
+                    if (it.id == null || isBlocked(it.id)) continue;
                     const meta = cache.get(String(it.id));
                     if (meta) applyMeta(it, meta);
                     if (!meta || metaStale(meta)) enrichPending.add(it.id);
@@ -1242,7 +1273,7 @@
     async function runReprice() {
         if (state.crawling || state.withdrawing || state.depositing) return;
         const ids = [...new Set(state.items
-            .filter((it) => it.id != null && !it.isNC && it.rarity !== 500)
+            .filter((it) => it.id != null && !it.isNC && it.rarity !== 500 && !isBlocked(it.id))
             .map((it) => it.id))];
         if (!ids.length && !state.items.length) {
             toast('Nothing to reprice: scan or load a snapshot first', true);
@@ -1383,6 +1414,14 @@
         catch { throw new Error('Bad move-items response'); }
         if (!json.success) {
             if (json.error === 'pin_wrong') throw new Error(`PIN_WRONG:${json.message || json.error}`);
+            if (json.error === 'partial_error') {
+                console.warn('[SDB] partial_error payload:', res.responseText);
+                throw Object.assign(new Error('partial_error'), {
+                    successCount: Number(json.success_count) || 0,
+                    errorCount: Number(json.error_count) || 0,
+                    serverMsg: json.message || '',
+                });
+            }
             throw new Error(json.error || 'move-items reported failure');
         }
         return json;
@@ -1462,13 +1501,22 @@
             }
         }
         const total = batches.reduce((s, b) => s + b.reduce((x, t) => x + t.q, 0), 0);
-        if (ncShopSkipped) toast(`${nf.format(ncShopSkipped)} NC item(s) skipped — NC can't be moved to a shop`, !total);
+        if (ncShopSkipped) toast(`${nf.format(ncShopSkipped)} NC item(s) skipped: NC can't be moved to a shop`, !total);
         if (!total) return;
 
         state.withdrawing = true;
         state.stopRequested = false;
         emit('withdraw:start', { total, action });
         let done = 0, failed = 0, consecFail = 0, ok = false;
+        const refused = [];
+        let boxChanged = false;
+        let notInBox = 0;
+        const abortMsg = () => {
+            const shown = refused.slice(-5).join(', ') + (refused.length > 5 ? `, +${refused.length - 5} more` : '');
+            return (done === 0 && !boxChanged)
+                ? `Aborted: 3 in a row failed and nothing has moved. Check your PIN and that you're still logged in. Refused: ${shown}`
+                : `Aborted: these items are no longer in your box; rescan to resync. Refused: ${shown}`;
+        };
         try {
             const refCk = await getRefCk();
             if (!refCk) throw new Error('Security token not found. Reload the page and try again.');
@@ -1480,14 +1528,15 @@
                     name: batch.length === 1 ? batch[0].it.name : `${batch.length} items`,
                 });
 
-                let batchOK = false;
+                let batchOK = false, partial = null;
                 try {
                     const moves = batch.map(({ it, q }) => ({ obj_info_id: it.id, quantity: q, action }));
                     await moveBatch(moves, pin, refCk);
                     batchOK = true;
                 } catch (err) {
                     if (err.message?.startsWith('PIN_WRONG:')) throw err;
-                    console.warn('[SDB] batch move failed, falling back to per-unit:', err);
+                    if (err.message === 'partial_error') partial = err;
+                    else console.warn('[SDB] batch move failed, falling back to per-unit:', err);
                 }
 
                 if (batchOK) {
@@ -1499,24 +1548,30 @@
                     consecFail = 0;
                     emit('withdraw:progress', { done: done - 1, total, name: batch.length === 1 ? batch[0].it.name : `${batch.length} items` });
                     emit('data:changed');
+                } else if (partial) {
+                    boxChanged = true;
+                    notInBox += partial.errorCount || 0;
+                    consecFail = 0;
+                    for (const { it } of batch) state.queue.delete(it.key);
+                    saveQueue();
+                    emit('data:changed');
                 } else {
                     for (const { it, q } of batch) {
                         if (state.stopRequested) break;
+                        let moved = 0;
                         try {
-                            const moved = await moveOneByOne(it, q, pin, action, refCk);
-                            done += moved;
-                            finalizeItem(it, moved);
-                            if (moved > 0) consecFail = 0;
-                            if (moved < q) {
-                                failed += (q - moved);
-                                if (++consecFail >= 3) throw new Error('Aborted: repeated failures (wrong PIN? logged out?)');
-                            }
+                            moved = await moveOneByOne(it, q, pin, action, refCk);
                         } catch (err) {
                             if (err.message?.startsWith('PIN_WRONG:')) throw err;
-                            console.warn('[SDB] withdraw failed for', it.name, err);
-                            failed += q;
-                            if (++consecFail >= 3) throw new Error('Aborted: 3 straight failures (wrong PIN? logged out?)');
+                            console.warn('[SDB] withdraw refused', it.name, err);
                         }
+                        done += moved;
+                        finalizeItem(it, moved);
+                        if (moved > 0) consecFail = 0;
+                        if (moved >= q) continue;
+                        failed += (q - moved);
+                        refused.push(it.name);
+                        if (++consecFail >= 3) throw new Error(abortMsg());
                     }
                     emit('data:changed');
                 }
@@ -1530,9 +1585,9 @@
             state.withdrawing = false;
             const stopped = state.stopRequested;
             state.stopRequested = false;
-            if (done > 0 && Store.get('sdb_scan_meta', null)) clearScanMeta();
+            if ((done > 0 || boxChanged) && Store.get('sdb_scan_meta', null)) clearScanMeta();
             saveSnapshot(state.scannedAt);
-            if (ok) emit('withdraw:done', { done, failed, stopped, action });
+            if (ok) emit('withdraw:done', { done, failed, stopped, action, refused, notInBox });
             emit('data:changed');
         }
     }
@@ -1833,7 +1888,7 @@
                 if (rMax != null && it.rarity > rMax) continue;
             }
             if (vMin != null || vMax != null) {
-                if (typeof it.value !== 'number') continue;
+                if (!(typeof it.value === 'number' && it.value > 0)) continue;
                 if (vMin != null && it.value < vMin) continue;
                 if (vMax != null && it.value > vMax) continue;
             }
@@ -2536,6 +2591,8 @@ render();
         .act .ic { width: 1.4em; height: 1.4em; }
         .btn.danger { color: var(--bad); border-color: rgba(248, 113, 113, 0.35); }
         .btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.12); }
+        /* Start and Stop share one fixed-width slot so swapping them never shifts Reprice. */
+        .scanbtn { min-width: 122px; justify-content: center; }
 
         .field { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
         .field input {
@@ -2598,6 +2655,12 @@ render();
         .advrow .field input { width: 84px; }
         /* Rarity and quantity are 2–3 digit fields; only Value (NP) needs room for 7+ digits. */
         .advrow .field input.narrow { width: 50px; }
+        /* Rarity/Value/Qty grouped into one muted "ranges" chip so they read as a single control
+           rather than three heavy fields. Input widths are unchanged, so nothing is harder to hit. */
+        .ranges { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 12px;
+            padding: 4px 9px; border-radius: 8px; background: var(--bg-2); }
+        .ranges .field { font-size: 11px; }
+        .ranges .rsep { color: var(--dim); }
 
         /* ── Card-view sort bar ──────────────────────────────── */
         .cardbar {
@@ -2614,6 +2677,26 @@ render();
         }
         .btn.on { border-color: var(--acc); color: var(--acc-2); }
         .btn.gone, .field input.gone { display: none; }
+        /* Anchored pop-menus (Flags, View, Tools). Reparented to .root and positioned fixed (JS sets
+           top/left) so an ancestor's overflow:hidden — e.g. .advrow — can't clip them. */
+        .dropdown { position: relative; display: inline-flex; }
+        .btn .caret { font-size: 10px; opacity: .6; }
+        .popmenu {
+            position: fixed; z-index: 2147483647;
+            display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; min-width: 148px;
+            background: var(--option-bg); border: 1px solid var(--line-strong); border-radius: 10px;
+            box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+        }
+        .popmenu.closed { display: none; }
+        .popmenu .group-label { font-size: 11px; color: var(--muted); margin-bottom: -2px; }
+        .popmenu .row-label { display: flex; align-items: center; justify-content: space-between; }
+        .popmenu .mini { width: 100%; }
+        .popmenu .menu-item {
+            display: flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-start;
+        }
+        .dice-btn { display: inline-flex; align-items: center; justify-content: center; padding: 0;
+            width: 22px; height: 20px; background: transparent; border: none; cursor: pointer; }
+        .dice-btn:hover { filter: brightness(1.15); }
 
         /* ── Pagination bar (page-by-page mode, animated) ────── */
         .pagebar {
@@ -3509,7 +3592,7 @@ render();
     // ── UI: markup ──────────────────────────────────────────────
     const ICONS = {
         play: '<polygon points="8 5 19 12 8 19" fill="currentColor" stroke="none"/>',
-        dice: '<g fill="url(#diceGrad)" stroke="none" transform="scale(0.046875)"><defs><linearGradient id="diceGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="var(--acc)"/><stop offset="100%" stop-color="var(--acc-2)"/></linearGradient></defs><path d="M454.608,111.204L280.557,6.804C272.992,2.268,264.504,0,256,0c-8.507,0-16.996,2.268-24.557,6.797L57.392,111.204c-5.346,3.203-9.916,7.37-13.555,12.192l207.902,124.707c2.622,1.575,5.896,1.575,8.518,0L468.16,123.396C464.521,118.574,459.955,114.407,454.608,111.204z M177.16,131.738c-12.056,8.371-31.302,8.16-42.984-0.49c-11.684-8.65-11.382-22.463,0.678-30.842c12.056-8.386,31.304-8.16,42.992,0.482C189.525,109.539,189.22,123.344,177.16,131.738z M376.303,134.126c-12.056,8.38-31.306,8.16-42.992-0.49c-11.68-8.65-11.378-22.462,0.685-30.841c12.053-8.38,31.302-8.168,42.985,0.482C388.664,111.928,388.359,125.732,376.303,134.126z"/><path d="M246.136,258.366L38.004,133.523c-2.457,5.802-3.794,12.116-3.794,18.62v208.084c0,16.773,8.801,32.311,23.182,40.946l174.051,104.392c5.828,3.496,12.203,5.629,18.714,6.435V265.464C250.156,262.556,248.631,259.858,246.136,258.366z M75.845,369.736c-12.052-6.571-21.829-21.671-21.829-33.728c0-12.056,9.777-16.502,21.829-9.931c12.056,6.57,21.826,21.671,21.826,33.728C97.671,371.861,87.902,376.306,75.845,369.736z M75.845,247.869c-12.052-6.578-21.829-21.678-21.829-33.728c0-12.056,9.777-16.501,21.829-9.931c12.056,6.571,21.826,21.671,21.826,33.728C97.671,249.986,87.902,254.44,75.845,247.869z M136.779,342.014c-12.056-6.571-21.826-21.671-21.826-33.728s9.769-16.502,21.826-9.931c12.056,6.571,21.829,21.671,21.829,33.728C158.608,344.131,148.835,348.585,136.779,342.014z M197.716,436.158c-12.056-6.571-21.83-21.671-21.83-33.727c0-12.049,9.773-16.495,21.83-9.924c12.056,6.57,21.826,21.67,21.826,33.72C219.541,438.284,209.772,442.729,197.716,436.158z M197.716,314.292c-12.056-6.57-21.83-21.671-21.83-33.727c0-12.056,9.773-16.502,21.83-9.931c12.056,6.571,21.826,21.671,21.826,33.727C219.541,316.417,209.772,320.863,197.716,314.292z"/><path d="M473.992,133.523L265.864,258.366c-2.494,1.492-4.02,4.19-4.02,7.098V512c6.506-0.806,12.889-2.939,18.714-6.435l174.051-104.392c14.381-8.635,23.182-24.172,23.182-40.946V152.143C477.79,145.64,476.453,139.326,473.992,133.523z M321.232,262.932c12.053-6.571,21.826-2.125,21.826,9.931c0,12.049-9.773,27.149-21.826,33.72c-12.06,6.571-21.83,2.125-21.83-9.924C299.402,284.604,309.172,269.503,321.232,262.932z M321.232,448.735c-12.06,6.57-21.83,2.125-21.83-9.931s9.77-27.15,21.83-33.728c12.053-6.571,21.826-2.118,21.826,9.931C343.058,427.064,333.285,442.164,321.232,448.735z M322.536,377.663c-12.056,6.571-21.83,2.117-21.83-9.939c0-12.048,9.773-27.149,21.83-33.72c12.056-6.57,21.826-2.125,21.826,9.931S334.592,371.085,322.536,377.663z M427.32,386.403c-12.056,6.571-21.826,2.125-21.826-9.931c0-12.056,9.769-27.156,21.826-33.72c12.056-6.578,21.829-2.133,21.829,9.924C449.149,364.732,439.376,379.833,427.32,386.403z M427.32,315.332c-12.056,6.563-21.826,2.125-21.826-9.931c0-12.056,9.769-27.157,21.826-33.728c12.056-6.571,21.829-2.125,21.829,9.931C449.149,293.653,439.376,308.761,427.32,315.332z M427.32,244.253c-12.056,6.57-21.826,2.125-21.826-9.924c0-12.056,9.769-27.157,21.826-33.728c12.056-6.571,21.829-2.125,21.829,9.931C449.149,222.582,439.376,237.682,427.32,244.253z"/></g>',
+        dice: '<g fill="url(#sdbAccGrad)" stroke="none" transform="scale(0.046875)"><path d="M454.608,111.204L280.557,6.804C272.992,2.268,264.504,0,256,0c-8.507,0-16.996,2.268-24.557,6.797L57.392,111.204c-5.346,3.203-9.916,7.37-13.555,12.192l207.902,124.707c2.622,1.575,5.896,1.575,8.518,0L468.16,123.396C464.521,118.574,459.955,114.407,454.608,111.204z M177.16,131.738c-12.056,8.371-31.302,8.16-42.984-0.49c-11.684-8.65-11.382-22.463,0.678-30.842c12.056-8.386,31.304-8.16,42.992,0.482C189.525,109.539,189.22,123.344,177.16,131.738z M376.303,134.126c-12.056,8.38-31.306,8.16-42.992-0.49c-11.68-8.65-11.378-22.462,0.685-30.841c12.053-8.38,31.302-8.168,42.985,0.482C388.664,111.928,388.359,125.732,376.303,134.126z"/><path d="M246.136,258.366L38.004,133.523c-2.457,5.802-3.794,12.116-3.794,18.62v208.084c0,16.773,8.801,32.311,23.182,40.946l174.051,104.392c5.828,3.496,12.203,5.629,18.714,6.435V265.464C250.156,262.556,248.631,259.858,246.136,258.366z M75.845,369.736c-12.052-6.571-21.829-21.671-21.829-33.728c0-12.056,9.777-16.502,21.829-9.931c12.056,6.57,21.826,21.671,21.826,33.728C97.671,371.861,87.902,376.306,75.845,369.736z M75.845,247.869c-12.052-6.578-21.829-21.678-21.829-33.728c0-12.056,9.777-16.501,21.829-9.931c12.056,6.571,21.826,21.671,21.826,33.728C97.671,249.986,87.902,254.44,75.845,247.869z M136.779,342.014c-12.056-6.571-21.826-21.671-21.826-33.728s9.769-16.502,21.826-9.931c12.056,6.571,21.829,21.671,21.829,33.728C158.608,344.131,148.835,348.585,136.779,342.014z M197.716,436.158c-12.056-6.571-21.83-21.671-21.83-33.727c0-12.049,9.773-16.495,21.83-9.924c12.056,6.57,21.826,21.67,21.826,33.72C219.541,438.284,209.772,442.729,197.716,436.158z M197.716,314.292c-12.056-6.57-21.83-21.671-21.83-33.727c0-12.056,9.773-16.502,21.83-9.931c12.056,6.571,21.826,21.671,21.826,33.727C219.541,316.417,209.772,320.863,197.716,314.292z"/><path d="M473.992,133.523L265.864,258.366c-2.494,1.492-4.02,4.19-4.02,7.098V512c6.506-0.806,12.889-2.939,18.714-6.435l174.051-104.392c14.381-8.635,23.182-24.172,23.182-40.946V152.143C477.79,145.64,476.453,139.326,473.992,133.523z M321.232,262.932c12.053-6.571,21.826-2.125,21.826,9.931c0,12.049-9.773,27.149-21.826,33.72c-12.06,6.571-21.83,2.125-21.83-9.924C299.402,284.604,309.172,269.503,321.232,262.932z M321.232,448.735c-12.06,6.57-21.83,2.125-21.83-9.931s9.77-27.15,21.83-33.728c12.053-6.571,21.826-2.118,21.826,9.931C343.058,427.064,333.285,442.164,321.232,448.735z M322.536,377.663c-12.056,6.571-21.83,2.117-21.83-9.939c0-12.048,9.773-27.149,21.83-33.72c12.056-6.57,21.826-2.125,21.826,9.931S334.592,371.085,322.536,377.663z M427.32,386.403c-12.056,6.571-21.826,2.125-21.826-9.931c0-12.056,9.769-27.156,21.826-33.72c12.056-6.578,21.829-2.133,21.829,9.924C449.149,364.732,439.376,379.833,427.32,386.403z M427.32,315.332c-12.056,6.563-21.826,2.125-21.826-9.931c0-12.056,9.769-27.157,21.826-33.728c12.056-6.571,21.829-2.125,21.829,9.931C449.149,293.653,439.376,308.761,427.32,315.332z M427.32,244.253c-12.056,6.57-21.826,2.125-21.826-9.924c0-12.056,9.769-27.157,21.826-33.728c12.056-6.571,21.829-2.125,21.829,9.931C449.149,222.582,439.376,237.682,427.32,244.253z"/></g>',
         box: '<path d="M12 3 20 7.5v9L12 21 4 16.5v-9Z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>',
         refresh: '<path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>',
         gear: '<g fill="url(#sdbAccGrad)" stroke="none"><path transform="scale(0.046875)" d="M502.325,307.303l-39.006-30.805c-6.215-4.908-9.665-12.429-9.668-20.348c0-0.084,0-0.168,0-0.252c-0.014-7.936,3.44-15.478,9.667-20.396l39.007-30.806c8.933-7.055,12.093-19.185,7.737-29.701l-17.134-41.366c-4.356-10.516-15.167-16.86-26.472-15.532l-49.366,5.8c-7.881,0.926-15.656-1.966-21.258-7.586c-0.059-0.06-0.118-0.119-0.177-0.178c-5.597-5.602-8.476-13.36-7.552-21.225l5.799-49.363c1.328-11.305-5.015-22.116-15.531-26.472L337.004,1.939c-10.516-4.356-22.646-1.196-29.701,7.736l-30.805,39.005c-4.908,6.215-12.43,9.665-20.349,9.668c-0.084,0-0.168,0-0.252,0c-7.935,0.014-15.477-3.44-20.395-9.667L204.697,9.675c-7.055-8.933-19.185-12.092-29.702-7.736L133.63,19.072c-10.516,4.356-16.86,15.167-15.532,26.473l5.799,49.366c0.926,7.881-1.964,15.656-7.585,21.257c-0.059,0.059-0.118,0.118-0.178,0.178c-5.602,5.598-13.36,8.477-21.226,7.552l-49.363-5.799c-11.305-1.328-22.116,5.015-26.472,15.531L1.939,174.996c-4.356,10.516-1.196,22.646,7.736,29.701l39.006,30.805c6.215,4.908,9.665,12.429,9.668,20.348c0,0.084,0,0.167,0,0.251c0.014,7.935-3.44,15.477-9.667,20.395L9.675,307.303c-8.933,7.055-12.092,19.185-7.736,29.701l17.134,41.365c4.356,10.516,15.168,16.86,26.472,15.532l49.366-5.799c7.882-0.926,15.656,1.965,21.258,7.586c0.059,0.059,0.118,0.119,0.178,0.178c5.597,5.603,8.476,13.36,7.552,21.226l-5.799,49.364c-1.328,11.305,5.015,22.116,15.532,26.472l41.366,17.134c10.516,4.356,22.646,1.196,29.701-7.736l30.804-39.005c4.908-6.215,12.43-9.665,20.348-9.669c0.084,0,0.168,0,0.251,0c7.936-0.014,15.478,3.44,20.396,9.667l30.806,39.007c7.055,8.933,19.185,12.093,29.701,7.736l41.366-17.134c10.516-4.356,16.86-15.168,15.532-26.472l-5.8-49.366c-0.926-7.881,1.965-15.656,7.586-21.257c0.059-0.059,0.119-0.119,0.178-0.178c5.602-5.597,13.36-8.476,21.225-7.552l49.364,5.799c11.305,1.328,22.117-5.015,26.472-15.531l17.134-41.365C514.418,326.488,511.258,314.358,502.325,307.303z M281.292,329.698c-39.68,16.436-85.172-2.407-101.607-42.087c-16.436-39.68,2.407-85.171,42.087-101.608c39.68-16.436,85.172,2.407,101.608,42.088C339.815,267.771,320.972,313.262,281.292,329.698z"/></g>',
@@ -3554,26 +3637,13 @@ render();
                     <div class="brand">${crawlerBadge('sdbcrawlerBadgeHead')}SDB<b>Crawler</b></div>
                     <span class="pill" id="statusPill">Idle</span>
                     <div class="spacer"></div>
-                    <!-- Options are rebuilt by rebuildThemeDropdown on mount and after every
-                         theme change; these are only what shows before that runs. -->
-                    <select class="mini" id="themeSel" title="Theme">
-                        <option value="dark">Dark</option>
-                        <option value="forest">Forest</option>
-                        <option value="retro">Retro</option>
-                        <option value="vaporwave">Vapor</option>
-                    </select>
-                    <select class="mini" id="gridZoomSel" title="Grid zoom">
-                        <option value="1.125">75%</option>
-                        <option value="1.5">100%</option>
-                        <option value="1.875">125%</option>
-                    </select>
                     <button class="icon" id="btnMax" title="Maximize / Restore">${icon('maximize')}</button>
                     <button class="icon" id="btnMin" title="Minimize">${icon('minus')}</button>
                 </header>
                 <div class="controls">
-                    <button class="btn primary" id="btnStart" title="Scan your SDB (resumes if interrupted)">${icon('play')} Start scan</button>
+                    <button class="btn primary scanbtn" id="btnStart" title="Scan your SDB (resumes if interrupted)">${icon('play')} Start scan</button>
+                    <button class="btn danger scanbtn gone" id="btnStop" title="Stop current operation">Stop</button>
                     <button class="btn" id="btnReprice" title="Refresh prices (no re-scan)">${icon('refresh')} Reprice</button>
-                    <button class="btn danger" id="btnStop" disabled title="Stop current operation">Stop</button>
                     <div class="spacer"></div>
                     <button class="btn primary" id="btnDeposit" title="Deposits inventory to SDB">${icon('box')}</button>
                     <button class="ctl-round" id="btnInfo" title="User guide">${icon('info')}</button>
@@ -3595,53 +3665,89 @@ render();
                     </div>
                     <button class="btn" id="btnAdv" title="Category, NP/NC, inflated, use type, rarity, value &amp; quantity filters">${icon('filter')} Filters</button>
                     <button class="btn gone" id="btnHidden" title="Toggle hidden rows &#xB7; Shift-click: unhide all"></button>
-                    <span class="segjoin" role="group" aria-label="View mode">
-                        <button class="btn" id="btnRows">${icon('list')} Rows</button>
-                        <button class="btn" id="btnCards">${icon('grid')} Cards</button>
+                    <span class="dropdown">
+                        <button class="btn" id="btnView" type="button" aria-haspopup="true" aria-expanded="false" title="Layout, scroll mode, theme &amp; zoom">${icon('grid')} View <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+                        <div class="popmenu closed" id="viewMenu" role="group" aria-label="View options">
+                            <div class="group-label">Layout</div>
+                            <span class="segjoin" role="group" aria-label="View mode">
+                                <button class="btn" id="btnRows">${icon('list')} Rows</button>
+                                <button class="btn" id="btnCards">${icon('grid')} Cards</button>
+                            </span>
+                            <div class="group-label">Scroll</div>
+                            <span class="segjoin" role="group" aria-label="Scroll mode">
+                                <button class="btn" id="btnScroll" title="Continuous virtual scroll">${icon('updown')} Scroll</button>
+                                <button class="btn" id="btnPaged" title="Page-by-page view">${icon('stack')} Paged</button>
+                            </span>
+                            <div class="group-label row-label">Theme
+                                <button class="dice-btn" id="btnRollTheme" type="button" title="Roll a random theme">${icon('dice')}</button>
+                            </div>
+                            <!-- themeSel options are rebuilt by rebuildThemeDropdown on mount and after each theme change. -->
+                            <select class="mini" id="themeSel" title="Theme">
+                                <option value="dark">Dark</option>
+                                <option value="forest">Forest</option>
+                                <option value="retro">Retro</option>
+                                <option value="vaporwave">Vapor</option>
+                            </select>
+                            <div class="group-label">Zoom</div>
+                            <select class="mini" id="gridZoomSel" title="Grid zoom">
+                                <option value="1.125">75%</option>
+                                <option value="1.5">100%</option>
+                                <option value="1.875">125%</option>
+                            </select>
+                        </div>
                     </span>
-                    <span class="segjoin" role="group" aria-label="Scroll mode">
-                        <button class="btn" id="btnScroll" title="Continuous virtual scroll">${icon('updown')} Scroll</button>
-                        <button class="btn" id="btnPaged" title="Page-by-page view">${icon('stack')} Paged</button>
+                    <span class="dropdown">
+                        <button class="btn" id="btnTools" type="button" aria-haspopup="true" aria-expanded="false" title="Copy, paste-to-queue &amp; snapshot tools">${icon('copy')} Tools <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+                        <div class="popmenu closed" id="toolsMenu" role="group" aria-label="Tools">
+                            <button class="btn menu-item" id="btnCopyNames" title="Copy the current view's item names">${icon('copy')} Copy names</button>
+                            <button class="btn menu-item" id="tsvCopy" title="Copy the current view as TSV (paste into a spreadsheet)">${icon('copy')} Copy as TSV</button>
+                            <button class="btn menu-item" id="btnPaste" title="Queue multiple items from a list">${icon('clipboard')} Paste list</button>
+                            <button class="btn menu-item" id="btnDiff" title="Compare with saved snapshot">${icon('delta')} Diff snapshot</button>
+                        </div>
                     </span>
-                    <button class="btn" id="btnDiff" title="Compare with saved snapshot">${icon('delta')}</button>
-                    <button class="btn" id="btnPaste" title="Queue multiple items from a list">${icon('clipboard')} Paste list</button>
-                    <button class="btn" id="btnCopyNames" title="Copy Current View">${icon('copy')} Copy</button>
-                    <button class="btn" id="btnCsv" title="Copy current view (Paste in Excel)">TSV</button>
                     <button class="btn" id="btnDownload" title="Download data">${icon('download')}</button>
                 </div>
                 <div class="advrow closed" id="advRow">
                     <label class="field">Category
                         <select id="catSel"><option value="__all">All categories</option></select>
                     </label>
-                    <label class="field">Rarity
-                        <input id="rMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum rarity">&#x2013;<input id="rMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum rarity">
-                    </label>
-                    <label class="field">Value (NP)
-                        <input id="vMin" type="number" min="0" placeholder="min" title="Minimum value (NP)">&#x2013;<input id="vMax" type="number" min="0" placeholder="max" title="Maximum value (NP)">
-                    </label>
-                    <label class="field">Qty
-                        <input id="qMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum quantity">&#x2013;<input id="qMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum quantity">
-                    </label>
+                    <span class="dropdown" id="flagsDrop">
+                        <button class="btn" id="btnFlags" type="button" aria-haspopup="true" aria-expanded="false"
+                                title="Hidden, inflated &amp; use-type filters">Flags <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+                        <div class="popmenu closed" id="flagMenu" role="group" aria-label="Flag filters">
+                            <label class="switch" title="Show only rows you have hidden">
+                                <input type="checkbox" id="hiddenOnly"><span class="track"></span>Hidden
+                            </label>
+                            <label class="switch" title="Show only items ItemDB flags as inflated">
+                                <input type="checkbox" id="infOnly"><span class="track"></span>Inflated
+                            </label>
+                            <label class="switch" title="Items ItemDB marks as edible (requires the card or full intent)">
+                                <input type="checkbox" id="filterCanEat"><span class="track"></span>Edible
+                            </label>
+                            <label class="switch" title="Items ItemDB marks as readable (requires the card or full intent)">
+                                <input type="checkbox" id="filterCanRead"><span class="track"></span>Readable
+                            </label>
+                            <label class="switch" title="Items ItemDB marks as openable (requires the card or full intent)">
+                                <input type="checkbox" id="filterCanOpen"><span class="track"></span>Openable
+                            </label>
+                        </div>
+                    </span>
+                    <div class="ranges">
+                        <label class="field">Rarity
+                            <input id="rMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum rarity"><span class="rsep">&#x2013;</span><input id="rMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum rarity">
+                        </label>
+                        <label class="field">Value
+                            <input id="vMin" type="number" min="0" placeholder="min" title="Minimum value (NP)"><span class="rsep">&#x2013;</span><input id="vMax" type="number" min="0" placeholder="max" title="Maximum value (NP)">
+                        </label>
+                        <label class="field">Qty
+                            <input id="qMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum quantity"><span class="rsep">&#x2013;</span><input id="qMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum quantity">
+                        </label>
+                    </div>
                     <div class="segset" id="ncMode" role="group" aria-label="Currency filter"
                          title="Currency &#xB7; with neither lit, everything is shown">
                         <button class="seg" data-nc="nc" title="Show only Neocash items &#xB7; click again to show everything">NC</button>
                         <button class="seg" data-nc="np" title="Show only NP items &#xB7; click again to show everything">NP</button>
                     </div>
-                    <label class="switch" title="Show only rows you have hidden">
-                        <input type="checkbox" id="hiddenOnly"><span class="track"></span>Hidden
-                    </label>
-                    <label class="switch" title="Show only items ItemDB flags as inflated">
-                        <input type="checkbox" id="infOnly"><span class="track"></span>Inflated
-                    </label>
-                    <label class="switch" title="Items ItemDB marks as edible (requires the card or full intent)">
-                        <input type="checkbox" id="filterCanEat"><span class="track"></span>Edible
-                    </label>
-                    <label class="switch" title="Items ItemDB marks as readable (requires the card or full intent)">
-                        <input type="checkbox" id="filterCanRead"><span class="track"></span>Readable
-                    </label>
-                    <label class="switch" title="Items ItemDB marks as openable (requires the card or full intent)">
-                        <input type="checkbox" id="filterCanOpen"><span class="track"></span>Openable
-                    </label>
                     <button class="btn" id="btnFilterClear" title="Clear every filter, range and toggle in this row">Reset filters</button>
                     <div class="spacer"></div>
                 </div>
@@ -3953,6 +4059,16 @@ render();
         Store.set('sdb_theme', name);
     }
 
+    function rollRandomTheme() {
+        const vars = randomThemeVars();
+        const font = loadCustomTheme()['--font'];
+        if (font) vars['--font'] = font;
+        Store.set('sdb_custom_theme', vars);
+        applyTheme('custom');
+        rebuildThemeDropdown();
+        toast('Random theme applied. Customize or save it in Settings ▸ Theme');
+    }
+
     function applyGridZoom(z) {
         if (!GRID_ZOOMS.includes(z)) z = 1.5;
         const changed = state.gridZoom !== z;
@@ -4032,6 +4148,7 @@ render();
         ui.qMax.value = state.filters.qMax ?? '';
         for (const [key, id] of USE_FILTERS) ui[id].checked = state.filters[key];
         ui.btnAdv.classList.toggle('on', !ui.advRow.classList.contains('closed'));
+        syncFlagsBtn();
 
         ui.cardSortSel.replaceChildren(...CARD_SORTS.map(([col, label]) => {
             const o = document.createElement('option');
@@ -4266,10 +4383,48 @@ render();
         }
         open();
     };
+    function copyViewAsTSV() {
+        const rows = exportRows();
+        if (!rows.length) { toast('Nothing to copy: the current view is empty', true); return; }
+        GM_setClipboard(toTSV(rows), 'text');
+        toast(`Copied ${nf.format(rows.length)} items as TSV`);
+    }
+
+    let openPopMenu = null;
+    function positionMenu(btn, menu) {
+        const r = btn.getBoundingClientRect();
+        const width = menu.offsetWidth || 148;
+        menu.style.top = `${r.bottom + 6}px`;
+        menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+    }
+    function closePopMenu(menu) {
+        if (!menu || menu.classList.contains('closed')) return;
+        menu.classList.add('closed');
+        menu._btn?.setAttribute('aria-expanded', 'false');
+        if (openPopMenu === menu) openPopMenu = null;
+    }
+    function openPop(menu) {
+        if (openPopMenu && openPopMenu !== menu) closePopMenu(openPopMenu);
+        positionMenu(menu._btn, menu);
+        menu.classList.remove('closed');
+        menu._btn.setAttribute('aria-expanded', 'true');
+        openPopMenu = menu;
+    }
+    function anchorMenu(btn, menu) {
+        menu._btn = btn;
+        ui.root.appendChild(menu);
+        btn.addEventListener('click', () => menu.classList.contains('closed') ? openPop(menu) : closePopMenu(menu));
+    }
+
+    function flagsActive() {
+        return !!(ui.hiddenOnly?.checked || ui.infOnly?.checked
+            || ui.filterCanEat?.checked || ui.filterCanRead?.checked || ui.filterCanOpen?.checked);
+    }
+    function syncFlagsBtn() { if (ui.btnFlags) ui.btnFlags.classList.toggle('on', flagsActive()); }
     const CUSTOM_KEYBIND_ACTIONS = {
         startScan:     { label: 'Start scan',          run: () => ui.btnStart?.click() },
         deposit:       { label: 'Deposit inventory',   run: () => ui.btnDeposit?.click() },
-        stop:          { label: 'Stop',                run: () => { if (ui.btnStop && !ui.btnStop.disabled) ui.btnStop.click(); } },
+        stop:          { label: 'Stop',                run: () => { if (ui.btnStop && !ui.btnStop.classList.contains('gone')) ui.btnStop.click(); } },
         toggleFilters: { label: 'Open filters',        run: () => ui.btnAdv?.click() },
         diff:          { label: 'Diff vs snapshot',    run: () => toggleModalAction('diff', () => ui.btnDiff?.click()) },
         copyView:      { label: 'Copy current view',   run: () => ui.btnCopyNames?.click() },
@@ -4280,6 +4435,7 @@ render();
         maximize:      { label: 'Maximize / restore',  run: () => toggleMaximize() },
         settings:      { label: 'Open settings',       run: () => toggleModalAction('settings', () => ui.btnItemdbCfg?.click()) },
         queueFiltered: { label: 'Queue filtered + Review', run: () => queueAllFilteredToReview() },
+        copyTsv:       { label: 'Copy view as TSV',    run: () => copyViewAsTSV() },
     };
     function loadCustomBinds() {
         const saved = Store.get('sdb_custom_keybinds', []);
@@ -4347,6 +4503,7 @@ render();
             rebuildThemeDropdown();
         });
         ui.gridZoomSel.addEventListener('change', () => applyGridZoom(parseFloat(ui.gridZoomSel.value)));
+        ui.btnRollTheme.addEventListener('click', rollRandomTheme);
 
         ui.btnItemdbCfg.addEventListener('click', () => openSettings());
         ui.btnPaste.addEventListener('click', openPasteList);
@@ -4412,6 +4569,20 @@ render();
             saveFilters();
         });
 
+        anchorMenu(ui.btnFlags, ui.flagMenu);
+        anchorMenu(ui.btnView, ui.viewMenu);
+        anchorMenu(ui.btnTools, ui.toolsMenu);
+        ui.flagMenu.addEventListener('change', syncFlagsBtn);
+        ui.tsvCopy.addEventListener('click', copyViewAsTSV);
+        ui.toolsMenu.addEventListener('click', (e) => { if (e.target.closest('button')) closePopMenu(ui.toolsMenu); });
+        shadowRoot.addEventListener('mousedown', (e) => {
+            if (!openPopMenu) return;
+            const path = e.composedPath ? e.composedPath() : [e.target];
+            if (!path.includes(openPopMenu) && !path.includes(openPopMenu._btn)) closePopMenu(openPopMenu);
+        });
+        shadowRoot.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openPopMenu) closePopMenu(openPopMenu); });
+        window.addEventListener('resize', () => closePopMenu(openPopMenu));
+
         const applyFilterRange = debounce(() => {
             const rMin = ui.rMin.value !== '' ? Number(ui.rMin.value) : null;
             const rMax = ui.rMax.value !== '' ? Number(ui.rMax.value) : null;
@@ -4443,11 +4614,18 @@ render();
             ui.infOnly.checked = false;
             state.hiddenOnly = false;
             ui.hiddenOnly.checked = false;
+            syncFlagsBtn();
             state.ncMode = 'all';
             Store.set('sdb_nc_mode', 'all');
             syncNcMode();
             state.category = '__all';
             ui.catSel.value = '__all';
+            if (ui.search.value) {
+                ui.search.value = '';
+                state.query = '';
+                state.queryMatch = null;
+                ui.searchClear.classList.remove('show');
+            }
             viewChanged({ swap: false });
         });
 
@@ -4535,11 +4713,6 @@ render();
             if (e.key === 'Enter') { e.preventDefault(); commitPageSizeNum(); }
         });
 
-        ui.btnCsv.addEventListener('click', () => {
-            const rows = exportRows();
-            GM_setClipboard(toTSV(rows), 'text');
-            toast(`Copied ${nf.format(rows.length)} items as TSV`);
-        });
         ui.btnDownload.addEventListener('click', openDownload);
     }
 
@@ -4699,7 +4872,7 @@ render();
                 <div class="modal-hint">Save a full backup of your box, prices and settings, or restore one. Import replaces matching data and reloads the page. Your Neopets SDB itself is never touched.</div>
                 <div class="io-group">
                     <button class="btn" id="dataExport" title="Download a full copy of everything SDBCrawler has stored: box, prices and every setting">${icon('download')} Export a Backup</button>
-                    <button class="btn" id="dataImport" title="Load a backup .json straight into storage — pick a file or drop one below">${icon('upload')} Import Backup</button>
+                    <button class="btn" id="dataImport" title="Load a backup .json straight into storage. Pick a file or drop one below">${icon('upload')} Import Backup</button>
                 </div>
                 <div class="io-drop" id="dataDrop">Drop a backup <b>.json</b> here, or use <b>Import Backup</b>
                     <input type="file" id="dataFile" accept="application/json,.json" hidden>
@@ -5172,7 +5345,7 @@ render();
                 <div class="guide-body">
                     <h4>Tips</h4>
                     <ul>
-                        <li>Press <b>Shift</b> and <b>+</b> to toggle the panel; <b>/</b> focuses the filter. Other shortcuts are unbound by default — set them in Settings ▸ Keybinds</li>
+                        <li>Press <b>Shift</b> and <b>+</b> to toggle the panel; <b>/</b> focuses the filter. Other shortcuts are unbound by default. Set them in Settings ▸ Keybinds</li>
                         <li>Drag the header to move the panel.</li>
                         <li>Hovering most buttons will expand a brief description</li>
                         <li>Filters, themes, column widths and panel position are remembered.</li>
@@ -5244,7 +5417,7 @@ render();
 
                     <h4>Exporting</h4>
                     <ul>
-                        <li><b>TSV</b> copies the current view.</li>
+                        <li><b>Copy as TSV</b> (bind a key in Settings &#xB7; Keybinds) copies the current view for pasting into a spreadsheet.</li>
                         <li><b>${icon('download')} Download</b>: the current view as <b>Excel</b>, <b>HTML</b>,
                             <b>CSV</b> or <b>JSON</b> (hover for columns).</li>
                         <li><b>Backup / restore</b>: under <b>${icon('gear')} Settings &#xB7; General &#xB7; Manage Data</b> 
@@ -5675,6 +5848,7 @@ render();
     const VALUE_TEXT = { 'permanent buyable': 'Buyable' };
     const fmtValue = (v) => v == null ? '–'
         : (typeof v === 'number' ? nf.format(v) : (VALUE_TEXT[String(v).trim().toLowerCase()] || String(v)));
+    const isUnpriced = (v) => v == null || (typeof v === 'number' && !(v > 0));
 
     const COMPACT_UNITS = ['', 'K', 'M', 'B', 'T'];
     const compactNumber = (v) => {
@@ -5735,13 +5909,14 @@ render();
         r.rar.textContent = rarityLabel(it.rarity);
         r.rar.title = it.rarity === 500 ? 'Neocash · rarity 500' : '';
         r.rar.className = `rar ${rarityClass(it.rarity)}`;
-        r.val.textContent = gridNum(it.value);
-        r.val.classList.toggle('inf', !!it.inflated);
-        r.val.title = [exactTitle(it.value), it.inflated ? 'itemdb flags this price as inflated' : '']
-            .filter(Boolean).join(' · ');
-        const total = typeof it.value === 'number' ? it.value * it.qty : null;
-        r.tot.textContent = gridNum(total);
-        r.tot.title = exactTitle(total);
+        const noPrice = isUnpriced(it.value);
+        r.val.textContent = noPrice ? '???' : gridNum(it.value);
+        r.val.classList.toggle('inf', !noPrice && !!it.inflated);
+        r.val.title = noPrice ? 'No price from itemdb'
+            : [exactTitle(it.value), it.inflated ? 'itemdb flags this price as inflated' : ''].filter(Boolean).join(' · ');
+        const total = (typeof it.value === 'number' && it.value > 0) ? it.value * it.qty : null;
+        r.tot.textContent = noPrice ? '???' : gridNum(total);
+        r.tot.title = noPrice ? '' : exactTitle(total);
 
         const L = linkUrls(it.name);
         r.ldb.href = L.db;
@@ -5879,16 +6054,17 @@ render();
         r.rar.className = `rar ${rarityClass(it.rarity)}`;
         r.desc.textContent = it.description || '';
         r.desc.title = it.description || '';
-        const total = typeof it.value === 'number' ? it.value * it.qty : null;
+        const noPrice = isUnpriced(it.value);
+        const total = (typeof it.value === 'number' && it.value > 0) ? it.value * it.qty : null;
         const exact = (v) => (compactNumber(v) === fmtValue(v) ? '' : fmtValue(v));
         r.nums[0].textContent = compactNumber(it.qty);
         r.nums[0].title = exact(it.qty);
-        r.nums[1].textContent = compactNumber(it.value);
-        r.nums[1].classList.toggle('inf', !!it.inflated);
-        r.nums[1].title = [exact(it.value), it.inflated ? 'itemdb flags this price as inflated' : '']
-            .filter(Boolean).join(' · ');
-        r.nums[2].textContent = compactNumber(total);
-        r.nums[2].title = exact(total);
+        r.nums[1].textContent = noPrice ? '???' : compactNumber(it.value);
+        r.nums[1].classList.toggle('inf', !noPrice && !!it.inflated);
+        r.nums[1].title = noPrice ? 'No price from itemdb'
+            : [exact(it.value), it.inflated ? 'itemdb flags this price as inflated' : ''].filter(Boolean).join(' · ');
+        r.nums[2].textContent = noPrice ? '???' : compactNumber(total);
+        r.nums[2].title = noPrice ? '' : exact(total);
         const L = linkUrls(it.name);
         r.ldb.href = L.db;
         r.ljn.href = L.jn;
@@ -6310,10 +6486,10 @@ render();
 
     // ── Bus subscriptions ──────────────────────────────────────
     const setBusy = (busy) => {
-        ui.btnStart.disabled = busy;
+        ui.btnStart.classList.toggle('gone', busy);
+        ui.btnStop.classList.toggle('gone', !busy);
         ui.btnReprice.disabled = busy;
         ui.btnDeposit.disabled = busy;
-        ui.btnStop.disabled = !busy;
     };
     on('crawl:start', ({ resuming, fromPage } = {}) => {
         setBusy(true);
@@ -6377,13 +6553,16 @@ render();
         setStatus('Error', 'err');
         toast(message, true);
     });
-    on('withdraw:done', ({ done, failed, stopped, action }) => {
+    on('withdraw:done', ({ done, failed, stopped, action, refused = [], notInBox = 0 }) => {
         setBusy(false);
         setProgress(null);
         const failTxt = failed ? ` · ${nf.format(failed)} failed` : '';
         const where = targetLabel(action);
         setStatus(`${stopped ? 'Stopped' : 'Moved'} ${nf.format(done)} to ${where}${failTxt}`, failed ? 'err' : '');
-        toast(`Moved ${nf.format(done)} unit${done === 1 ? '' : 's'} to your ${where}${failTxt}`, failed > 0);
+        const names = refused.slice(0, 5).join(', ') + (refused.length > 5 ? `, +${refused.length - 5} more` : '');
+        const refTxt = refused.length ? ` · refused: ${names}` : '';
+        const skipTxt = notInBox ? ` · skipped ${nf.format(notInBox)} no longer in your box, rescan to refresh` : '';
+        toast(`Moved ${nf.format(done)} unit${done === 1 ? '' : 's'} to your ${where}${failTxt}${refTxt}${skipTxt}`, failed > 0 || notInBox > 0);
     });
     on('deposit:start', () => {
         setBusy(true);
