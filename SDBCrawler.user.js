@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Neopets SDBCrawler
-// @version      2.3.1
+// @version      2.4.0
 // @author       TamperPanda
-// @description  SDB logging, pricing and management tool.
+// @description  Highly Customizable SDB Management tool.
 // @match        https://www.neopets.com/safetydeposit.phtml*
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMDAgMjAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM3YzZjZmYiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMyMmQzZWUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cGF0aCBmaWxsPSJ1cmwoI2cpIiBkPSJNMTk5Ljk4IDEwMkguMDJhMTAwLjAxNyAxMDAuMDE3IDAgMDAzLjM5MyAyNGgxOTMuMTc0YTEwMC4wMjggMTAwLjAyOCAwIDAwMy4zOTMtMjR6TTE5NS40MjIgMTMwSDQuNTc4YTk5LjQ0OCA5OS40NDggMCAwMDguOCAyMGgxNzMuMjQ0YTk5LjQ1IDk5LjQ1IDAgMDA4LjgtMjB6TTE4NC4xODEgMTU0SDE1LjgxOWExMDAuNDc0IDEwMC40NzQgMCAwMDEyLjc2NyAxNmgxNDIuODI4YTEwMC40MzEgMTAwLjQzMSAwIDAwMTIuNzY3LTE2ek0xNjcuMjYyIDE3NEgzMi43MzhhMTAwLjI2NyAxMDAuMjY3IDAgMDAxOS43MjQgMTRoOTUuMDc2YTEwMC4yODkgMTAwLjI4OSAwIDAwMTkuNzI0LTE0ek0xMzkuMjU3IDE5Mkg2MC43NDNjMTIuMDUyIDUuMTUgMjUuMzIyIDggMzkuMjU3IDggMTMuOTM1IDAgMjcuMjA1LTIuODUgMzkuMjU3LTh6TTE5OS45OCA5OEguMDJhOTkuNzUzIDk5Ljc1MyAwIDAxNS41NTMtMzFoMTg4Ljg1NGE5OS43MjMgOTkuNzIzIDAgMDE1LjU1MyAzMXpNMTkyLjkzMiA2M0MxNzguMjIzIDI2LjA4NyAxNDIuMTU4IDAgMTAwIDBTMjEuNzc3IDI2LjA4NyA3LjA2OCA2M2gxODUuODY0eiIvPjwvc3ZnPg==
 // @grant        GM_setValue
@@ -404,12 +404,11 @@
         stats: { unique: 0, qty: 0, value: 0, nc: 0 },
         query: '',
         queryMatch: null,
-        category: '__all',
+        catFilter: {},
         ncMode: 'all',
         hiddenOnly: false,
-        inflatedOnly: false,
-        filters: { rMin: null, rMax: null, vMin: null, vMax: null, qMin: null, qMax: null,
-                   canEat: false, canRead: false, canOpen: false },
+        triFlags: { inflated: 0, canEat: 0, canRead: 0, canOpen: 0 },
+        filters: { rMin: null, rMax: null, vMin: null, vMax: null, qMin: null, qMax: null },
         pager: { mode: 'virtual', page: 1, pageSize: 90 },
         theme: 'dark',
         gridZoom: 1.5,
@@ -1869,19 +1868,28 @@
     };
 
     function rebuildView() {
-        const { query, queryMatch, category, ncMode, hiddenOnly, inflatedOnly, filters } = state;
+        const { query, queryMatch, ncMode, hiddenOnly, triFlags, catFilter, filters } = state;
         const rMin = filters.rMin, rMax = filters.rMax, vMin = filters.vMin, vMax = filters.vMax;
         const qMin = filters.qMin, qMax = filters.qMax;
-        const useFilters = filters.canEat || filters.canRead || filters.canOpen;
+        let catInc = null, catExc = null;
+        for (const c in catFilter) {
+            if (catFilter[c] === 1) (catInc || (catInc = new Set())).add(c);
+            else if (catFilter[c] === 2) (catExc || (catExc = new Set())).add(c);
+        }
+        const { inflated: tfInf, canEat: tfEat, canRead: tfRead, canOpen: tfOpen } = triFlags;
         const out = [];
         const stats = { unique: 0, qty: 0, value: 0, nc: 0 };
         for (const it of state.items) {
             if (hiddenOnly) { if (!hiddenKeys.has(it.key)) continue; }
             else if (!showHidden && hiddenKeys.has(it.key)) continue;
-            if (category !== '__all' && (catLabel(it) || 'Unknown') !== category) continue;
+            if (catInc || catExc) {
+                const c = catLabel(it) || 'Unknown';
+                if (catExc && catExc.has(c)) continue;
+                if (catInc && !catInc.has(c)) continue;
+            }
             if (ncMode === 'np' && it.isNC) continue;
             if (ncMode === 'nc' && !it.isNC) continue;
-            if (inflatedOnly && !it.inflated) continue;
+            if (tfInf && (tfInf === 1 ? !it.inflated : it.inflated)) continue;
             if (rMin != null || rMax != null) {
                 if (typeof it.rarity !== 'number') continue;
                 if (rMin != null && it.rarity < rMin) continue;
@@ -1894,11 +1902,9 @@
             }
             if (qMin != null && it.qty < qMin) continue;
             if (qMax != null && it.qty > qMax) continue;
-            if (useFilters) {
-                if (filters.canEat && !it.canEat) continue;
-                if (filters.canRead && !it.canRead) continue;
-                if (filters.canOpen && !it.canOpen) continue;
-            }
+            if (tfEat && (tfEat === 1 ? !it.canEat : it.canEat)) continue;
+            if (tfRead && (tfRead === 1 ? !it.canRead : it.canRead)) continue;
+            if (tfOpen && (tfOpen === 1 ? !it.canOpen : it.canOpen)) continue;
             if (query) {
                 if (queryMatch) { if (!queryMatch(it.blob)) continue; }
                 else if (!it.blob.includes(query)) continue;
@@ -1938,23 +1944,16 @@
     }
 
     // ── Filter / view-pref persistence ─────────────────────────
-    const USE_FILTERS = [
-        ['canEat', 'filterCanEat'], ['canRead', 'filterCanRead'],
-        ['canOpen', 'filterCanOpen'],
-    ];
-
     function saveFilters() {
         Store.set('sdb_filters', {
             query: state.query,
-            category: state.category,
+            catFilter: state.catFilter,
             ncMode: state.ncMode,
             hiddenOnly: state.hiddenOnly,
-            inflatedOnly: state.inflatedOnly,
+            triFlags: state.triFlags,
             rMin: state.filters.rMin, rMax: state.filters.rMax,
             vMin: state.filters.vMin, vMax: state.filters.vMax,
             qMin: state.filters.qMin, qMax: state.filters.qMax,
-            canEat: state.filters.canEat, canRead: state.filters.canRead,
-            canOpen: state.filters.canOpen,
             sortCol: state.sort.col, sortDir: state.sort.dir,
             advOpen: ui.advRow ? !ui.advRow.classList.contains('closed') : false,
         });
@@ -2660,7 +2659,7 @@ render();
         .ranges { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 12px;
             padding: 4px 9px; border-radius: 8px; background: var(--bg-2); }
         .ranges .field { font-size: 11px; }
-        .ranges .rsep { color: var(--dim); }
+        .ranges .rsep { color: var(--dim); font-size: 10.5px; letter-spacing: 0.02em; }
 
         /* ── Card-view sort bar ──────────────────────────────── */
         .cardbar {
@@ -2697,6 +2696,35 @@ render();
         .dice-btn { display: inline-flex; align-items: center; justify-content: center; padding: 0;
             width: 22px; height: 20px; background: transparent; border: none; cursor: pointer; }
         .dice-btn:hover { filter: brightness(1.15); }
+
+        /* Tri-state filter rows (Category + Flags): empty → is (green) → is-not (red). */
+        .tri-list { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
+        .tri {
+            display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+            padding: 5px 6px; border: none; border-radius: 6px; background: transparent;
+            color: var(--muted); font-size: 12px; cursor: var(--cur-pointer);
+        }
+        .tri:hover { background: var(--bg-2); color: var(--text); }
+        .tribox {
+            width: 16px; height: 16px; flex: none; box-sizing: border-box;
+            border: 1.6px solid var(--dim); border-radius: 4px;
+            display: flex; align-items: center; justify-content: center;
+            transition: border-color 120ms, background 120ms;
+        }
+        .tribox .tglyph { width: 100%; height: 100%; display: none; }
+        .tri[data-tri="1"] .tribox { border-color: var(--good); background: rgba(52, 211, 153, 0.16); color: var(--good); }
+        .tri[data-tri="1"] .tri-c { display: block; }
+        .tri[data-tri="2"] .tribox { border-color: var(--bad); background: rgba(248, 113, 113, 0.16); color: var(--bad); }
+        .tri[data-tri="2"] .tri-x { display: block; }
+        .tri[data-tri="2"] .tlabel { color: var(--bad); }
+        .tlabel { flex: 1; }
+        .tri-reset {
+            margin-top: 4px; padding: 6px; width: 100%; text-align: left;
+            border: none; border-top: 1px solid var(--line); border-radius: 0;
+            background: transparent; color: var(--muted); font-size: 12px; cursor: var(--cur-pointer);
+        }
+        .tri-reset:hover { color: var(--text); }
+        .tri-sep { height: 1px; background: var(--line); margin: 4px 2px; }
 
         /* ── Pagination bar (page-by-page mode, animated) ────── */
         .pagebar {
@@ -2909,19 +2937,19 @@ render();
 
         .viewport { flex: 1; overflow: auto; position: relative; overscroll-behavior: contain; scrollbar-gutter: stable; }
         /* Shared themed scrollbars — the grid viewport and any scrollable dialog field. */
-        .viewport, .paste-ta, .qchips, .guide-body, .rv-scroll, .rv-missing, .tabpane { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+        .viewport, .paste-ta, .qchips, .guide-body, .rv-scroll, .rv-missing, .tabpane, .tri-list { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
         .viewport::-webkit-scrollbar, .paste-ta::-webkit-scrollbar, .qchips::-webkit-scrollbar, .guide-body::-webkit-scrollbar,
-        .rv-scroll::-webkit-scrollbar, .rv-missing::-webkit-scrollbar, .tabpane::-webkit-scrollbar { width: 10px; height: 10px; }
+        .rv-scroll::-webkit-scrollbar, .rv-missing::-webkit-scrollbar, .tabpane::-webkit-scrollbar, .tri-list::-webkit-scrollbar { width: 10px; height: 10px; }
         .viewport::-webkit-scrollbar-track, .paste-ta::-webkit-scrollbar-track, .qchips::-webkit-scrollbar-track, .guide-body::-webkit-scrollbar-track,
-        .rv-scroll::-webkit-scrollbar-track, .rv-missing::-webkit-scrollbar-track, .tabpane::-webkit-scrollbar-track { background: transparent; }
+        .rv-scroll::-webkit-scrollbar-track, .rv-missing::-webkit-scrollbar-track, .tabpane::-webkit-scrollbar-track, .tri-list::-webkit-scrollbar-track { background: transparent; }
         .viewport::-webkit-scrollbar-thumb, .paste-ta::-webkit-scrollbar-thumb, .qchips::-webkit-scrollbar-thumb, .guide-body::-webkit-scrollbar-thumb,
-        .rv-scroll::-webkit-scrollbar-thumb, .rv-missing::-webkit-scrollbar-thumb, .tabpane::-webkit-scrollbar-thumb {
+        .rv-scroll::-webkit-scrollbar-thumb, .rv-missing::-webkit-scrollbar-thumb, .tabpane::-webkit-scrollbar-thumb, .tri-list::-webkit-scrollbar-thumb {
             background: var(--scroll-thumb); border-radius: 99px;
             border: 3px solid transparent; background-clip: content-box;
         }
         .viewport::-webkit-scrollbar-thumb:hover, .paste-ta::-webkit-scrollbar-thumb:hover, .qchips::-webkit-scrollbar-thumb:hover,
         .rv-scroll::-webkit-scrollbar-thumb:hover, .rv-missing::-webkit-scrollbar-thumb:hover,
-        .tabpane::-webkit-scrollbar-thumb:hover {
+        .tabpane::-webkit-scrollbar-thumb:hover, .tri-list::-webkit-scrollbar-thumb:hover {
             background: var(--scroll-thumb-hover); border: 3px solid transparent; background-clip: content-box;
         }
 
@@ -3142,6 +3170,9 @@ render();
            would otherwise add ~4px to every card the moment the image gains a wrapper. */
         .card .thumbwrap { position: relative; display: block; flex: none; }
         .card .thumbwrap img { display: block; }
+        /* Item thumbnails copy the name on click (both views). */
+        .c-item img, .card .thumbwrap img { cursor: var(--cur-pointer); }
+        .c-item img:hover, .card .thumbwrap img:hover { filter: brightness(1.15); }
         .card .rar {
             position: absolute; top: auto; left: auto;
             right: calc(-3px * var(--zoom)); bottom: calc(-3px * var(--zoom));
@@ -3606,7 +3637,7 @@ render();
         copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
         download: '<path d="M6 21H18M12 3V17M12 17L17 12M12 17L7 12"/>',
         upload: '<path d="M6 21H18M12 17V3M12 3L17 8M12 3L7 8"/>',
-        maximize: '<g fill="currentColor" stroke="none"><path d="M3 7C3 7.55228 2.55228 8 2 8C1.44772 8 1 7.55228 1 7V3C1 1.89543 1.89543 1 3 1H7C7.55228 1 8 1.44772 8 2C8 2.55228 7.55228 3 7 3H4.41421L10.7071 9.29289C11.0976 9.68342 11.0976 10.3166 10.7071 10.7071C10.3166 11.0976 9.68342 11.0976 9.29289 10.7071L3 4.41422V7Z"/><path d="M21 17C21 16.4477 21.4477 16 22 16C22.5523 16 23 16.4477 23 17V21C23 22.1046 22.1046 23 21 23H17C16.4477 23 16 22.5523 16 22C16 21.4477 16.4477 21 17 21H19.5858L13.2929 14.7071C12.9024 14.3166 12.9024 13.6834 13.2929 13.2929C13.6834 12.9024 14.3166 12.9024 14.7071 13.2929L21 19.5858V17Z"/><path d="M21 7C21 7.55228 21.4477 8 22 8C22.5523 8 23 7.55228 23 7V3C23 1.89543 22.1046 1 21 1H17C16.4477 1 16 1.44772 16 2C16 2.55228 16.4477 3 17 3H19.5858L13.2929 9.29289C12.9024 9.68342 12.9024 10.3166 13.2929 10.7071C13.6834 11.0976 14.3166 11.0976 14.7071 10.7071L21 4.41421V7Z"/><path d="M3 17C3 16.4477 2.55228 16 2 16C1.44772 16 1 16.4477 1 17V21C1 22.1046 1.89543 23 3 23H7C7.55228 23 8 22.5523 8 22C8 21.4477 7.55228 21 7 21H4.41421L10.7071 14.7071C11.0976 14.3166 11.0976 13.6834 10.7071 13.2929C10.3166 12.9024 9.68342 12.9024 9.29289 13.2929L3 19.5858V17Z"/></g>',
+        maximize: '<g fill="currentColor" stroke="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M22 5C22 3.34315 20.6569 2 19 2H5C3.34315 2 2 3.34315 2 5V19C2 20.6569 3.34315 22 5 22H19C20.6569 22 22 20.6569 22 19V5ZM20 5C20 4.44772 19.5523 4 19 4H5C4.44772 4 4 4.44772 4 5V19C4 19.5523 4.44772 20 5 20H19C19.5523 20 20 19.5523 20 19V5Z"/></g>',
         restore: '<g fill="currentColor" stroke="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M23 4C23 2.34315 21.6569 1 20 1H8C6.34315 1 5 2.34315 5 4V5H4C2.34315 5 1 6.34315 1 8V20C1 21.6569 2.34315 23 4 23H16C17.6569 23 19 21.6569 19 20V19H20C21.6569 19 23 17.6569 23 16V4ZM19 17H20C20.5523 17 21 16.5523 21 16V4C21 3.44772 20.5523 3 20 3H8C7.44772 3 7 3.44772 7 4V5H16C17.6569 5 19 6.34315 19 8V17ZM16 7C16.5523 7 17 7.44772 17 8V20C17 20.5523 16.5523 21 16 21H4C3.44772 21 3 20.5523 3 20V8C3 7.44772 3.44772 7 4 7H16Z"/></g>',
         info: '<g fill="url(#sdbAccGrad)" stroke="none"><circle cx="12" cy="4.1" r="3.1"/><rect x="8.9" y="8.9" width="6.2" height="12.9" rx="3.1"/></g>',
         arrowLeft:  '<g fill="currentColor" stroke="none"><path transform="scale(1.6)" d="M6.14645 9.85355L6.5 10.2071L7.20711 9.5L6.85355 9.14645L6.14645 9.85355ZM4.5 7.5L4.14645 7.14645L3.79289 7.5L4.14645 7.85355L4.5 7.5ZM6.85355 5.85355L7.20711 5.5L6.5 4.79289L6.14645 5.14645L6.85355 5.85355ZM6.85355 9.14645L4.85355 7.14645L4.14645 7.85355L6.14645 9.85355L6.85355 9.14645ZM4.85355 7.85355L6.85355 5.85355L6.14645 5.14645L4.14645 7.14645L4.85355 7.85355ZM4.5 8H11V7H4.5V8Z"/></g>',
@@ -3618,6 +3649,22 @@ render();
         x: '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
     };
     const icon = (name, extra) => `<svg class="ic${extra ? ' ' + extra : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
+    const TRI_CELL = '<span class="tribox">'
+        + '<svg class="tglyph tri-c" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 12.5 9.5 18.5 20 6"/></svg>'
+        + '<svg class="tglyph tri-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>'
+        + '</span>';
+    const triRow = (id, label, title) =>
+        `<button class="tri" id="${id}" data-tri="0" type="button" role="checkbox" aria-checked="mixed"${title ? ` title="${title}"` : ''}>${TRI_CELL}<span class="tlabel">${label}</span></button>`;
+    const TRI_FLAGS = [
+        ['inflated', 'triInflated', 'Inflated', 'Items ItemDB flags as inflated'],
+        ['canEat',   'triCanEat',   'Edible',   'Items ItemDB marks as edible (card or full intent)'],
+        ['canRead',  'triCanRead',  'Readable', 'Items ItemDB marks as readable (card or full intent)'],
+        ['canOpen',  'triCanOpen',  'Openable', 'Items ItemDB marks as openable (card or full intent)'],
+    ];
+    const TRI_KEY_BY_ID = Object.fromEntries(TRI_FLAGS.map(([key, id]) => [id, key]));
+    const nextTri = (v) => (v + 1) % 3;
+    const triAria = (v) => v === 1 ? 'true' : v === 2 ? 'false' : 'mixed';
 
     const CRAWLER_GLYPH = 'M199.98 102H.02a100.017 100.017 0 003.393 24h193.174a100.028 100.028 0 003.393-24zM195.422 130H4.578a99.448 99.448 0 008.8 20h173.244a99.45 99.45 0 008.8-20zM184.181 154H15.819a100.474 100.474 0 0012.767 16h142.828a100.431 100.431 0 0012.767-16zM167.262 174H32.738a100.267 100.267 0 0019.724 14h95.076a100.289 100.289 0 0019.724-14zM139.257 192H60.743c12.052 5.15 25.322 8 39.257 8 13.935 0 27.205-2.85 39.257-8zM199.98 98H.02a99.753 99.753 0 015.553-31h188.854a99.723 99.723 0 015.553 31zM192.932 63C178.223 26.087 142.158 0 100 0S21.777 26.087 7.068 63h185.864z';
     const crawlerBadge = (gid) => `<span class="brand-badge"><svg viewBox="0 0 200 200" aria-hidden="true"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--acc)"/><stop offset="1" stop-color="var(--acc-2)"/></linearGradient></defs><path fill="url(#${gid})" d="${CRAWLER_GLYPH}"/></svg></span>`;
@@ -3700,47 +3747,40 @@ render();
                         <button class="btn" id="btnTools" type="button" aria-haspopup="true" aria-expanded="false" title="Copy, paste-to-queue &amp; snapshot tools">${icon('copy')} Tools <span aria-hidden="true" class="caret">&#x25BE;</span></button>
                         <div class="popmenu closed" id="toolsMenu" role="group" aria-label="Tools">
                             <button class="btn menu-item" id="btnCopyNames" title="Copy the current view's item names">${icon('copy')} Copy names</button>
-                            <button class="btn menu-item" id="tsvCopy" title="Copy the current view as TSV (paste into a spreadsheet)">${icon('copy')} Copy as TSV</button>
                             <button class="btn menu-item" id="btnPaste" title="Queue multiple items from a list">${icon('clipboard')} Paste list</button>
+                            <button class="btn menu-item" id="tsvCopy" title="Copy the current view as TSV (paste into a spreadsheet)">${icon('copy')} Copy as TSV</button>
                             <button class="btn menu-item" id="btnDiff" title="Compare with saved snapshot">${icon('delta')} Diff snapshot</button>
                         </div>
                     </span>
                     <button class="btn" id="btnDownload" title="Download data">${icon('download')}</button>
                 </div>
                 <div class="advrow closed" id="advRow">
-                    <label class="field">Category
-                        <select id="catSel"><option value="__all">All categories</option></select>
-                    </label>
+                    <span class="dropdown" id="catDrop">
+                        <button class="btn" id="btnCat" type="button" aria-haspopup="true" aria-expanded="false"
+                                title="Filter by category (include / exclude)">Category <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+                        <div class="popmenu closed" id="catMenu" role="group" aria-label="Category filters">
+                            <div class="tri-list" id="catTriList"></div>
+                            <button class="tri-reset" id="catReset" type="button">Reset categories</button>
+                        </div>
+                    </span>
                     <span class="dropdown" id="flagsDrop">
                         <button class="btn" id="btnFlags" type="button" aria-haspopup="true" aria-expanded="false"
                                 title="Hidden, inflated &amp; use-type filters">Flags <span aria-hidden="true" class="caret">&#x25BE;</span></button>
                         <div class="popmenu closed" id="flagMenu" role="group" aria-label="Flag filters">
-                            <label class="switch" title="Show only rows you have hidden">
-                                <input type="checkbox" id="hiddenOnly"><span class="track"></span>Hidden
-                            </label>
-                            <label class="switch" title="Show only items ItemDB flags as inflated">
-                                <input type="checkbox" id="infOnly"><span class="track"></span>Inflated
-                            </label>
-                            <label class="switch" title="Items ItemDB marks as edible (requires the card or full intent)">
-                                <input type="checkbox" id="filterCanEat"><span class="track"></span>Edible
-                            </label>
-                            <label class="switch" title="Items ItemDB marks as readable (requires the card or full intent)">
-                                <input type="checkbox" id="filterCanRead"><span class="track"></span>Readable
-                            </label>
-                            <label class="switch" title="Items ItemDB marks as openable (requires the card or full intent)">
-                                <input type="checkbox" id="filterCanOpen"><span class="track"></span>Openable
-                            </label>
+                            <div class="tri-list">${TRI_FLAGS.map(([, id, label, title]) => triRow(id, label, title)).join('')}</div>
+                            <div class="tri-sep"></div>
+                            ${triRow('hiddenOnly', 'Hidden', 'Show only rows you have hidden')}
                         </div>
                     </span>
                     <div class="ranges">
                         <label class="field">Rarity
-                            <input id="rMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum rarity"><span class="rsep">&#x2013;</span><input id="rMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum rarity">
+                            <input id="rMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum rarity"><span class="rsep">to</span><input id="rMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum rarity">
                         </label>
                         <label class="field">Value
-                            <input id="vMin" type="number" min="0" placeholder="min" title="Minimum value (NP)"><span class="rsep">&#x2013;</span><input id="vMax" type="number" min="0" placeholder="max" title="Maximum value (NP)">
+                            <input id="vMin" type="number" min="0" placeholder="min" title="Minimum value (NP)"><span class="rsep">to</span><input id="vMax" type="number" min="0" placeholder="max" title="Maximum value (NP)">
                         </label>
                         <label class="field">Qty
-                            <input id="qMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum quantity"><span class="rsep">&#x2013;</span><input id="qMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum quantity">
+                            <input id="qMin" class="narrow" type="number" min="0" placeholder="min" title="Minimum quantity"><span class="rsep">to</span><input id="qMax" class="narrow" type="number" min="0" placeholder="max" title="Maximum quantity">
                         </label>
                     </div>
                     <div class="segset" id="ncMode" role="group" aria-label="Currency filter"
@@ -4115,21 +4155,30 @@ render();
         if (savedF) {
             state.query = typeof savedF.query === 'string' ? savedF.query : '';
             state.queryMatch = compileQuery(state.query);
-            state.category = typeof savedF.category === 'string' ? savedF.category : '__all';
             state.ncMode = normNcMode(savedF.ncMode);
             state.hiddenOnly = !!savedF.hiddenOnly;
-            state.inflatedOnly = !!savedF.inflatedOnly;
+            const triVal = (v) => (v === 1 || v === 2) ? v : 0;
+            state.catFilter = {};
+            if (savedF.catFilter && typeof savedF.catFilter === 'object') {
+                for (const c in savedF.catFilter) { const v = triVal(savedF.catFilter[c]); if (v) state.catFilter[c] = v; }
+            } else if (typeof savedF.category === 'string' && savedF.category !== '__all') {
+                state.catFilter[savedF.category] = 1;
+            }
+            const tf = savedF.triFlags;
+            state.triFlags = (tf && typeof tf === 'object')
+                ? { inflated: triVal(tf.inflated), canEat: triVal(tf.canEat), canRead: triVal(tf.canRead), canOpen: triVal(tf.canOpen) }
+                : { inflated: savedF.inflatedOnly ? 1 : 0, canEat: savedF.canEat ? 1 : 0, canRead: savedF.canRead ? 1 : 0, canOpen: savedF.canOpen ? 1 : 0 };
             state.filters = {
                 rMin: num(savedF.rMin), rMax: num(savedF.rMax), vMin: num(savedF.vMin), vMax: num(savedF.vMax),
                 qMin: num(savedF.qMin), qMax: num(savedF.qMax),
-                canEat: !!savedF.canEat, canRead: !!savedF.canRead,
-                canOpen: !!savedF.canOpen,
             };
             if (savedF.sortCol && SORT_GETTERS[savedF.sortCol]) {
                 state.sort = { col: savedF.sortCol, dir: savedF.sortDir === 1 ? 1 : -1 };
             }
-            if (savedF.advOpen || state.inflatedOnly || state.hiddenOnly || state.ncMode !== 'all'
-                || Object.values(state.filters).some((v) => v != null && v !== false)) {
+            if (savedF.advOpen || state.hiddenOnly || state.ncMode !== 'all'
+                || Object.keys(state.catFilter).length
+                || Object.values(state.triFlags).some((v) => v)
+                || Object.values(state.filters).some((v) => v != null)) {
                 ui.advRow.classList.remove('closed');
             }
         } else {
@@ -4138,15 +4187,13 @@ render();
         ui.search.value = state.query;
         ui.searchClear.classList.toggle('show', !!state.query);
         syncNcMode();
-        ui.hiddenOnly.checked = state.hiddenOnly;
-        ui.infOnly.checked = state.inflatedOnly;
+        syncTriUI();
         ui.rMin.value = state.filters.rMin ?? '';
         ui.rMax.value = state.filters.rMax ?? '';
         ui.vMin.value = state.filters.vMin ?? '';
         ui.vMax.value = state.filters.vMax ?? '';
         ui.qMin.value = state.filters.qMin ?? '';
         ui.qMax.value = state.filters.qMax ?? '';
-        for (const [key, id] of USE_FILTERS) ui[id].checked = state.filters[key];
         ui.btnAdv.classList.toggle('on', !ui.advRow.classList.contains('closed'));
         syncFlagsBtn();
 
@@ -4417,10 +4464,47 @@ render();
     }
 
     function flagsActive() {
-        return !!(ui.hiddenOnly?.checked || ui.infOnly?.checked
-            || ui.filterCanEat?.checked || ui.filterCanRead?.checked || ui.filterCanOpen?.checked);
+        const tf = state.triFlags;
+        return !!(state.hiddenOnly || tf.inflated || tf.canEat || tf.canRead || tf.canOpen);
     }
     function syncFlagsBtn() { if (ui.btnFlags) ui.btnFlags.classList.toggle('on', flagsActive()); }
+    function syncCatBtn() { if (ui.btnCat) ui.btnCat.classList.toggle('on', Object.keys(state.catFilter).length > 0); }
+
+    function syncTriUI() {
+        for (const [key, id] of TRI_FLAGS) {
+            const el = ui[id]; if (!el) continue;
+            const v = state.triFlags[key] || 0;
+            el.dataset.tri = String(v);
+            el.setAttribute('aria-checked', triAria(v));
+        }
+        if (ui.hiddenOnly) {
+            ui.hiddenOnly.dataset.tri = state.hiddenOnly ? '1' : '0';
+            ui.hiddenOnly.setAttribute('aria-checked', state.hiddenOnly ? 'true' : 'false');
+        }
+    }
+
+    function renderCatMenu() {
+        if (!ui.catTriList) return;
+        const frag = document.createDocumentFragment();
+        for (const c of catsCache) {
+            const b = document.createElement('button');
+            b.className = 'tri';
+            b.type = 'button';
+            b.dataset.cat = c;
+            const v = state.catFilter[c] || 0;
+            b.dataset.tri = String(v);
+            b.setAttribute('role', 'checkbox');
+            b.setAttribute('aria-checked', triAria(v));
+            b.innerHTML = TRI_CELL;
+            const lab = document.createElement('span');
+            lab.className = 'tlabel';
+            lab.textContent = c;
+            b.append(lab);
+            frag.append(b);
+        }
+        ui.catTriList.replaceChildren(frag);
+        syncCatBtn();
+    }
     const CUSTOM_KEYBIND_ACTIONS = {
         startScan:     { label: 'Start scan',          run: () => ui.btnStart?.click() },
         deposit:       { label: 'Deposit inventory',   run: () => ui.btnDeposit?.click() },
@@ -4569,10 +4653,10 @@ render();
             saveFilters();
         });
 
+        anchorMenu(ui.btnCat, ui.catMenu);
         anchorMenu(ui.btnFlags, ui.flagMenu);
         anchorMenu(ui.btnView, ui.viewMenu);
         anchorMenu(ui.btnTools, ui.toolsMenu);
-        ui.flagMenu.addEventListener('change', syncFlagsBtn);
         ui.tsvCopy.addEventListener('click', copyViewAsTSV);
         ui.toolsMenu.addEventListener('click', (e) => { if (e.target.closest('button')) closePopMenu(ui.toolsMenu); });
         shadowRoot.addEventListener('mousedown', (e) => {
@@ -4597,29 +4681,56 @@ render();
             input.addEventListener('input', applyFilterRange);
         });
 
-        for (const [key, id] of USE_FILTERS) {
-            ui[id].addEventListener('change', () => {
-                state.filters[key] = ui[id].checked;
+        ui.flagMenu.addEventListener('click', (e) => {
+            const t = e.target.closest('.tri'); if (!t) return;
+            if (t.id === 'hiddenOnly') {
+                state.hiddenOnly = !state.hiddenOnly;
+                t.dataset.tri = state.hiddenOnly ? '1' : '0';
+                t.setAttribute('aria-checked', state.hiddenOnly ? 'true' : 'false');
+                syncFlagsBtn();
                 viewChanged({ swap: false });
-            });
-        }
+                return;
+            }
+            const key = TRI_KEY_BY_ID[t.id]; if (!key) return;
+            const v = nextTri(state.triFlags[key] || 0);
+            state.triFlags[key] = v;
+            t.dataset.tri = String(v);
+            t.setAttribute('aria-checked', triAria(v));
+            syncFlagsBtn();
+            viewChanged({ swap: false });
+        });
+
+        ui.catTriList.addEventListener('click', (e) => {
+            const t = e.target.closest('.tri'); if (!t) return;
+            const c = t.dataset.cat;
+            const v = nextTri(state.catFilter[c] || 0);
+            if (v) state.catFilter[c] = v; else delete state.catFilter[c];
+            t.dataset.tri = String(v);
+            t.setAttribute('aria-checked', triAria(v));
+            syncCatBtn();
+            viewChanged({ swap: false });
+        });
+        ui.catReset.addEventListener('click', () => {
+            state.catFilter = {};
+            for (const t of ui.catTriList.querySelectorAll('.tri')) { t.dataset.tri = '0'; t.setAttribute('aria-checked', 'mixed'); }
+            syncCatBtn();
+            viewChanged({ swap: false });
+        });
 
         ui.btnFilterClear.addEventListener('click', () => {
             ui.rMin.value = ''; ui.rMax.value = ''; ui.vMin.value = ''; ui.vMax.value = '';
             ui.qMin.value = ''; ui.qMax.value = '';
-            state.filters = { rMin: null, rMax: null, vMin: null, vMax: null, qMin: null, qMax: null,
-                              canEat: false, canRead: false, canOpen: false };
-            for (const [, id] of USE_FILTERS) ui[id].checked = false;
-            state.inflatedOnly = false;
-            ui.infOnly.checked = false;
+            state.filters = { rMin: null, rMax: null, vMin: null, vMax: null, qMin: null, qMax: null };
+            state.triFlags = { inflated: 0, canEat: 0, canRead: 0, canOpen: 0 };
             state.hiddenOnly = false;
-            ui.hiddenOnly.checked = false;
+            syncTriUI();
             syncFlagsBtn();
             state.ncMode = 'all';
             Store.set('sdb_nc_mode', 'all');
             syncNcMode();
-            state.category = '__all';
-            ui.catSel.value = '__all';
+            state.catFilter = {};
+            for (const t of ui.catTriList.querySelectorAll('.tri')) { t.dataset.tri = '0'; t.setAttribute('aria-checked', 'mixed'); }
+            syncCatBtn();
             if (ui.search.value) {
                 ui.search.value = '';
                 state.query = '';
@@ -5348,6 +5459,7 @@ render();
                         <li>Press <b>Shift</b> and <b>+</b> to toggle the panel; <b>/</b> focuses the filter. Other shortcuts are unbound by default. Set them in Settings ▸ Keybinds</li>
                         <li>Drag the header to move the panel.</li>
                         <li>Hovering most buttons will expand a brief description</li>
+                        <li>Click an item image to copy its name.</li>
                         <li>Filters, themes, column widths and panel position are remembered.</li>
                     </ul>
 
@@ -5394,7 +5506,7 @@ render();
                     <ul>
                         <li>Search matches name, category, ID.</li>
                         <li>Wildcards: <code>*</code> (any), <code>?</code> (single), <code>&amp;</code> (compound search), <code>!</code> (negation).</li>
-                        <li><b>${icon('filter')} Filters</b>: category, hidden, currency (NC/NP), inflated, use-type (Edible/Readable/Openable), rarity/value/qty ranges.</li>
+                        <li><b>${icon('filter')} Filters</b>: Category and the Flags (Inflated, Edible, Readable, Openable) are three-state (click to include, click again to exclude, third click clears). Also Hidden, currency (NC/NP), and rarity/value/qty ranges.</li>
                         <li><b>NC/NP</b> toggle: click a lit button to clear the filter.</li>
                         <li><b>Reset filters</b> clears all.</li>
                         <li>Sort: click any column heading.</li>
@@ -5420,7 +5532,7 @@ render();
                         <li><b>Copy as TSV</b> (bind a key in Settings &#xB7; Keybinds) copies the current view for pasting into a spreadsheet.</li>
                         <li><b>${icon('download')} Download</b>: the current view as <b>Excel</b>, <b>HTML</b>,
                             <b>CSV</b> or <b>JSON</b> (hover for columns).</li>
-                        <li><b>Backup / restore</b>: under <b>${icon('gear')} Settings &#xB7; General &#xB7; Manage Data</b> 
+                        <li><b>Backup / restore</b>: under <b>${icon('gear')} Settings &#xB7; General &#xB7; Manage Data</b>
                             <b>Export a Backup</b> saves a full JSON of settings + data; <b>Import Backup</b> (pick a file
                             or drop one) loads it straight back into storage and reloads.</li>
                     </ul>
@@ -5787,7 +5899,7 @@ render();
         const el = document.createElement('div');
         el.className = 'row cols';
         el.innerHTML = `
-            <div class="c-item"><img loading="lazy" decoding="async" alt=""><span class="name"></span></div>
+            <div class="c-item"><img loading="lazy" decoding="async" alt="" title="Click to copy item name"><span class="name"></span></div>
             <div class="c-num val"></div>
             <div class="c-num qty"></div>
             <div class="c-num tot"></div>
@@ -5994,7 +6106,7 @@ render();
                  bottom-align across a grid row. -->
             <div class="c-top">
                 <span class="thumbwrap">
-                    <img loading="lazy" decoding="async" alt="">
+                    <img loading="lazy" decoding="async" alt="" title="Click to copy item name">
                     <span class="rar"></span>
                 </span>
                 <span class="name"></span>
@@ -6160,20 +6272,8 @@ render();
         const sig = cats.join('|');
         if (sig !== catSignature) {
             catSignature = sig;
-            const frag = document.createDocumentFragment();
-            const all = document.createElement('option');
-            all.value = '__all';
-            all.textContent = 'All categories';
-            frag.append(all);
-            for (const c of cats) {
-                const o = document.createElement('option');
-                o.value = c;
-                o.textContent = c;
-                frag.append(o);
-            }
-            ui.catSel.replaceChildren(frag);
-            ui.catSel.value = cats.includes(state.category) ? state.category : '__all';
-            state.category = ui.catSel.value;
+            for (const c in state.catFilter) if (!cats.includes(c)) delete state.catFilter[c];
+            renderCatMenu();
         }
         renderQueueBar();
     }
@@ -6356,27 +6456,12 @@ render();
             ui.search.focus();
         });
 
-        ui.catSel.addEventListener('change', () => {
-            state.category = ui.catSel.value;
-            viewChanged({ save: false });
-        });
-
         ui.ncMode.addEventListener('click', (e) => {
             const seg = e.target.closest('.seg');
             if (!seg) return;
             state.ncMode = normNcMode(seg.dataset.nc === state.ncMode ? 'all' : seg.dataset.nc);
             Store.set('sdb_nc_mode', state.ncMode);
             syncNcMode();
-            viewChanged();
-        });
-
-        ui.hiddenOnly.addEventListener('change', () => {
-            state.hiddenOnly = ui.hiddenOnly.checked;
-            viewChanged();
-        });
-
-        ui.infOnly.addEventListener('change', () => {
-            state.inflatedOnly = ui.infOnly.checked;
             viewChanged();
         });
 
@@ -6423,6 +6508,13 @@ render();
             if (e.detail !== 0) {
                 const ctrl = e.target.closest('a, button');
                 if (ctrl && ctrl.closest('.row, .card')) ctrl.blur();
+            }
+            const imgEl = e.target.closest('img');
+            if (imgEl && imgEl.closest('.c-item, .thumbwrap')) {
+                const key = imgEl.closest('.row, .card')?._key;
+                const it = key && state.byKey.get(key);
+                if (it) { GM_setClipboard(it.name, 'text'); toast('Item name copied'); }
+                return;
             }
             const step = e.target.closest('.qp, .qm');
             if (step) {
