@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Neopets SDBCrawler
-// @version      2.4.0
+// @version      2.5.0
 // @author       TamperPanda
-// @description  Highly Customizable SDB Management tool.
+// @description  Neopets SDB crawler: virtualized grid, ItemDB pricing, batch item management.
 // @match        https://www.neopets.com/safetydeposit.phtml*
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMDAgMjAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM3YzZjZmYiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMyMmQzZWUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cGF0aCBmaWxsPSJ1cmwoI2cpIiBkPSJNMTk5Ljk4IDEwMkguMDJhMTAwLjAxNyAxMDAuMDE3IDAgMDAzLjM5MyAyNGgxOTMuMTc0YTEwMC4wMjggMTAwLjAyOCAwIDAwMy4zOTMtMjR6TTE5NS40MjIgMTMwSDQuNTc4YTk5LjQ0OCA5OS40NDggMCAwMDguOCAyMGgxNzMuMjQ0YTk5LjQ1IDk5LjQ1IDAgMDA4LjgtMjB6TTE4NC4xODEgMTU0SDE1LjgxOWExMDAuNDc0IDEwMC40NzQgMCAwMDEyLjc2NyAxNmgxNDIuODI4YTEwMC40MzEgMTAwLjQzMSAwIDAwMTIuNzY3LTE2ek0xNjcuMjYyIDE3NEgzMi43MzhhMTAwLjI2NyAxMDAuMjY3IDAgMDAxOS43MjQgMTRoOTUuMDc2YTEwMC4yODkgMTAwLjI4OSAwIDAwMTkuNzI0LTE0ek0xMzkuMjU3IDE5Mkg2MC43NDNjMTIuMDUyIDUuMTUgMjUuMzIyIDggMzkuMjU3IDggMTMuOTM1IDAgMjcuMjA1LTIuODUgMzkuMjU3LTh6TTE5OS45OCA5OEguMDJhOTkuNzUzIDk5Ljc1MyAwIDAxNS41NTMtMzFoMTg4Ljg1NGE5OS43MjMgOTkuNzIzIDAgMDE1LjU1MyAzMXpNMTkyLjkzMiA2M0MxNzguMjIzIDI2LjA4NyAxNDIuMTU4IDAgMTAwIDBTMjEuNzc3IDI2LjA4NyA3LjA2OCA2M2gxODUuODY0eiIvPjwvc3ZnPg==
 // @grant        GM_setValue
@@ -315,7 +315,7 @@
 
     const ALL_STORE_KEYS = [
         'sdb_queue', 'sdb_v2_snapshot', 'itemDatabase', 'itemDataDate', 'sdb_scan_meta',
-        'sdb_ui_position', 'sdb_ui_size', 'sdb_ui_open',
+        'sdb_ui_position', 'sdb_ui_size', 'sdb_ui_open', 'sdb_launcher_corner',
         'sdb_hidden_keys', 'sdb_filters', 'sdb_pager',
         'sdb_theme', 'sdb_grid_zoom', 'sdb_card_view', 'sdb_col_widths',
         'sdb_move_target', 'sdb_itemdb_intent', 'sdb_itemdb_chunk',
@@ -1867,48 +1867,56 @@
         total:  (it) => typeof it.value === 'number' ? it.value * it.qty : -1,
     };
 
+    function passesFilters(it, f) {
+        if (f.catInc || f.catExc) {
+            const c = f.catL(it) || 'Unknown';
+            if (f.catExc && f.catExc.has(c)) return false;
+            if (f.catInc && !f.catInc.has(c)) return false;
+        }
+        if (f.ncMode === 'np' && it.isNC) return false;
+        if (f.ncMode === 'nc' && !it.isNC) return false;
+        const tf = f.triFlags;
+        if (tf.inflated && (tf.inflated === 1 ? !it.inflated : it.inflated)) return false;
+        if (f.rMin != null || f.rMax != null) {
+            if (typeof it.rarity !== 'number') return false;
+            if (f.rMin != null && it.rarity < f.rMin) return false;
+            if (f.rMax != null && it.rarity > f.rMax) return false;
+        }
+        if (f.vMin != null || f.vMax != null) {
+            if (!(typeof it.value === 'number' && it.value > 0)) return false;
+            if (f.vMin != null && it.value < f.vMin) return false;
+            if (f.vMax != null && it.value > f.vMax) return false;
+        }
+        if (f.qMin != null && it.qty < f.qMin) return false;
+        if (f.qMax != null && it.qty > f.qMax) return false;
+        if (tf.canEat && (tf.canEat === 1 ? !it.canEat : it.canEat)) return false;
+        if (tf.canRead && (tf.canRead === 1 ? !it.canRead : it.canRead)) return false;
+        if (tf.canOpen && (tf.canOpen === 1 ? !it.canOpen : it.canOpen)) return false;
+        if (f.query) {
+            if (f.queryMatch) { if (!f.queryMatch(it.blob)) return false; }
+            else if (!it.blob.includes(f.query)) return false;
+        }
+        return true;
+    }
+
     function rebuildView() {
         const { query, queryMatch, ncMode, hiddenOnly, triFlags, catFilter, filters } = state;
-        const rMin = filters.rMin, rMax = filters.rMax, vMin = filters.vMin, vMax = filters.vMax;
-        const qMin = filters.qMin, qMax = filters.qMax;
         let catInc = null, catExc = null;
         for (const c in catFilter) {
             if (catFilter[c] === 1) (catInc || (catInc = new Set())).add(c);
             else if (catFilter[c] === 2) (catExc || (catExc = new Set())).add(c);
         }
-        const { inflated: tfInf, canEat: tfEat, canRead: tfRead, canOpen: tfOpen } = triFlags;
+        const f = {
+            catInc, catExc, catL: catLabel, ncMode, triFlags,
+            rMin: filters.rMin, rMax: filters.rMax, vMin: filters.vMin, vMax: filters.vMax,
+            qMin: filters.qMin, qMax: filters.qMax, query, queryMatch,
+        };
         const out = [];
         const stats = { unique: 0, qty: 0, value: 0, nc: 0 };
         for (const it of state.items) {
             if (hiddenOnly) { if (!hiddenKeys.has(it.key)) continue; }
             else if (!showHidden && hiddenKeys.has(it.key)) continue;
-            if (catInc || catExc) {
-                const c = catLabel(it) || 'Unknown';
-                if (catExc && catExc.has(c)) continue;
-                if (catInc && !catInc.has(c)) continue;
-            }
-            if (ncMode === 'np' && it.isNC) continue;
-            if (ncMode === 'nc' && !it.isNC) continue;
-            if (tfInf && (tfInf === 1 ? !it.inflated : it.inflated)) continue;
-            if (rMin != null || rMax != null) {
-                if (typeof it.rarity !== 'number') continue;
-                if (rMin != null && it.rarity < rMin) continue;
-                if (rMax != null && it.rarity > rMax) continue;
-            }
-            if (vMin != null || vMax != null) {
-                if (!(typeof it.value === 'number' && it.value > 0)) continue;
-                if (vMin != null && it.value < vMin) continue;
-                if (vMax != null && it.value > vMax) continue;
-            }
-            if (qMin != null && it.qty < qMin) continue;
-            if (qMax != null && it.qty > qMax) continue;
-            if (tfEat && (tfEat === 1 ? !it.canEat : it.canEat)) continue;
-            if (tfRead && (tfRead === 1 ? !it.canRead : it.canRead)) continue;
-            if (tfOpen && (tfOpen === 1 ? !it.canOpen : it.canOpen)) continue;
-            if (query) {
-                if (queryMatch) { if (!queryMatch(it.blob)) continue; }
-                else if (!it.blob.includes(query)) continue;
-            }
+            if (!passesFilters(it, f)) continue;
             out.push(it);
             stats.unique += 1;
             stats.qty += it.qty;
@@ -2034,7 +2042,7 @@
         return [header, ...body].join('\r\n');
     }
 
-    function toStandaloneHTML(rows) {
+    function toStandaloneHTML(items) {
         const escH = escHTML;
         const when = new Date().toLocaleString();
         const cols = COL_DEFS.filter((c) => c.key !== 'move');
@@ -2045,14 +2053,45 @@
                 ? `minmax(calc(${min}px * var(--zoom)), 1fr)`
                 : `calc(${Math.max(min, w)}px * var(--zoom))`;
         }).join(' ');
-        const data = rows.map((r) => ({
-            n: r.name, i: r.id, q: r.qty, c: titleCase(r.category), r: r.rarity,
-            v: r.value, t: r.total, nc: r.isNC ? 1 : 0, f: r.inflated ? 1 : 0, im: r.image,
+        const data = items.map((it) => ({
+            name: it.name, id: it.id ?? null, qty: it.qty, image: it.image || '',
+            cat: it.cat || null, type: it.type || null, catL: catLabel(it),
+            rarity: it.rarity ?? null, value: it.value ?? null,
+            total: typeof it.value === 'number' ? it.value * it.qty : null,
+            isNC: it.isNC ? 1 : 0, inflated: it.inflated ? 1 : 0,
+            canEat: it.canEat ? 1 : 0, canRead: it.canRead ? 1 : 0, canOpen: it.canOpen ? 1 : 0,
+            nameLC: it.nameLC, blob: it.blob,
         }));
         const json = JSON.stringify(data).replace(/</g, '\\u003c');
-        const cats = [...new Set(data.map((d) => d.c).filter(Boolean))].sort();
-        const catOpts = ['<option value="__all">All categories</option>']
-            .concat(cats.map((c) => `<option value="${escH(c)}">${escH(c)}</option>`)).join('');
+        const cats = [...new Set(data.map((d) => d.catL || 'Unknown'))].sort();
+
+        const themeClass = (state.theme && state.theme !== 'dark' && state.theme !== 'custom') ? ` t-${state.theme}` : '';
+        const gridZoom = state.gridZoom || 1.5;
+        let rootStyle = `--zoom: ${gridZoom};`;
+        if (state.theme === 'custom') {
+            const custom = loadCustomTheme();
+            for (const [v] of THEME_VARS) if (custom[v]) rootStyle += ` ${v}: ${custom[v]};`;
+            if (custom['--font']) rootStyle += ` --font: ${custom['--font']};`;
+        }
+
+        const fnObjSrc = (o) => '{' + Object.entries(o).map(([k, v]) => `${JSON.stringify(k)}: ${v.toString()}`).join(', ') + '}';
+        const SHARED_JS = [
+            `const NEG_RE = ${NEG_RE.toString()};`,
+            `const escHTML = ${escHTML.toString()};`,
+            `const termMatcher = ${termMatcher.toString()};`,
+            `const compileQuery = ${compileQuery.toString()};`,
+            `const rarityClass = ${rarityClass.toString()};`,
+            `const rarityLabel = ${rarityLabel.toString()};`,
+            `const isUnpriced = ${isUnpriced.toString()};`,
+            `const VALUE_TEXT = ${JSON.stringify(VALUE_TEXT)};`,
+            `const fmtValue = ${fmtValue.toString()};`,
+            `const linkUrls = ${linkUrls.toString()};`,
+            `const defaultSortDir = ${defaultSortDir.toString()};`,
+            `const SORT_GETTERS = ${fnObjSrc(SORT_GETTERS)};`,
+            `const passesFilters = ${passesFilters.toString()};`,
+        ].join('\n');
+        const flagRows = TRI_FLAGS.map(([, id, label, title]) => triRow(id, label, title)).join('');
+        const hiddenRow = triRow('hiddenOnly', 'Hidden', 'Show only rows you have hidden');
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -2062,7 +2101,6 @@
 <title>SDBCrawler &#xB7; ${escH(when)}</title>
 <style>
 ${CSS}
-/* ── Export overrides: render the panel as a full page ── */
 html, body { margin: 0; height: 100%; }
 body { background: #0f1117; }
 .root { display: block; height: 100vh; --cols-template: ${template}; }
@@ -2077,22 +2115,16 @@ body { background: #0f1117; }
 .vspacer { height: auto !important; }
 .c-q, .th.move { display: none; }
 .exp-meta { padding: 0 14px 10px; font-size: 12px; color: var(--dim); }
+.exp-pager { display: flex; align-items: center; gap: 10px; padding: 8px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+.exp-pager .btn:disabled { opacity: .4; cursor: default; }
 </style>
 </head>
 <body>
-<!-- The link-image preference is baked in at export time: the exported page has no settings
-     of its own, so it should look like the panel did when you exported it. -->
-<div class="root${linkImages ? ' link-icons' : ''}" id="root">
+<div class="root${linkImages ? ' link-icons' : ''}${themeClass}" id="root" style="${rootStyle}">
   <section class="panel" id="panel">
     <header class="head">
       <div class="brand"><span class="dot"></span><b>SDBCrawler</b></div>
       <div class="spacer"></div>
-      <!-- Built from BUILTIN_THEMES so the exported page can never fall behind the panel's
-           theme list. Saved themes aren't offered: they live in your browser's storage, and
-           this page is a standalone file that has none of it. -->
-      <select class="mini" id="themeSel" title="Theme">
-${BUILTIN_THEMES.map(([v, label]) => `        <option value="${v}">${label}</option>`).join('\n')}
-      </select>
       <select class="mini" id="zoomSel" title="Grid zoom">
         <option value="1.125">75%</option><option value="1.5">100%</option><option value="1.875">125%</option>
       </select>
@@ -2110,136 +2142,187 @@ ${BUILTIN_THEMES.map(([v, label]) => `        <option value="${v}">${label}</opt
         </svg>
         <input id="search" type="text" placeholder="Filter&#8230; &#8226; * ? wildcards &#8226; &amp; = match all &#8226; ! = not" spellcheck="false" autocomplete="off">
       </div>
-      <label class="field">Category <select id="catSel">${catOpts}</select></label>
+      <span class="dropdown" id="catDrop">
+        <button class="btn" id="btnCat" type="button" aria-haspopup="true" aria-expanded="false"
+                title="Filter by category (include / exclude)">Category <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+        <div class="popmenu closed" id="catMenu" role="group" aria-label="Category filters">
+          <div class="tri-list" id="catTriList"></div>
+          <button class="tri-reset" id="catReset" type="button">Reset categories</button>
+        </div>
+      </span>
+      <span class="dropdown" id="flagsDrop">
+        <button class="btn" id="btnFlags" type="button" aria-haspopup="true" aria-expanded="false"
+                title="Inflated &amp; use-type filters">Flags <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+        <div class="popmenu closed" id="flagMenu" role="group" aria-label="Flag filters">
+          <div class="tri-list">${flagRows}</div>
+          <div class="tri-sep"></div>
+          ${hiddenRow}
+        </div>
+      </span>
       <div class="segset" id="ncMode" role="group" aria-label="Currency filter"
            title="Currency &#xB7; with neither lit, everything is shown">
         <button class="seg" data-nc="nc" title="Show only Neocash items &#xB7; click again to show everything">NC</button>
         <button class="seg" data-nc="np" title="Show only NP items &#xB7; click again to show everything">NP</button>
       </div>
-      <label class="switch"><input type="checkbox" id="infOnly"><span class="track"></span>Inflated</label>
     </div>
-    <div class="exp-meta">Snapshot of ${nf.format(rows.length)} items &#xB7; exported ${escH(when)}</div>
+    <div class="exp-meta">Snapshot of ${nf.format(items.length)} items &#xB7; exported ${escH(when)}</div>
     <div class="grid-area">
       <div class="gridhead cols" id="gridHead">
-        <button class="th" data-sort="n">Item <span class="arr"></span></button>
-        <button class="th num" data-sort="v">Value <span class="arr"></span></button>
-        <button class="th num" data-sort="q">Qty <span class="arr"></span></button>
-        <button class="th num" data-sort="t">Total <span class="arr"></span></button>
-        <button class="th num" data-sort="r">Rarity <span class="arr"></span></button>
-        <button class="th ctr" data-sort="c">Category <span class="arr"></span></button>
-        <button class="th ctr" data-sort="i">ID <span class="arr"></span></button>
+        <button class="th" data-sort="name">Item <span class="arr"></span></button>
+        <button class="th num" data-sort="value">Value <span class="arr"></span></button>
+        <button class="th num" data-sort="qty">Qty <span class="arr"></span></button>
+        <button class="th num" data-sort="total">Total <span class="arr"></span></button>
+        <button class="th num" data-sort="rarity">Rarity <span class="arr"></span></button>
+        <button class="th ctr" data-sort="cat">Category <span class="arr"></span></button>
+        <button class="th ctr" data-sort="id">ID <span class="arr"></span></button>
         <span class="th ctr">Action</span>
         <span class="th">Links</span>
       </div>
       <div class="viewport" id="viewport"><div class="vspacer paged" id="vspacer"></div></div>
     </div>
+    <div class="exp-pager">
+      <button class="btn" id="pgPrev" type="button">Prev</button>
+      <span id="pgInfo"></span>
+      <button class="btn" id="pgNext" type="button">Next</button>
+      <span style="flex:1"></span>
+      <label class="field">Per page
+        <select class="mini" id="pgSize">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="250">250</option>
+          <option value="1000">1000</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+    </div>
   </section>
 </div>
 <script>
 const DATA = ${json};
+const CATS = ${JSON.stringify(cats)};
+const TRI_CELL = ${JSON.stringify(TRI_CELL)};
+const TRI_KEY_BY_ID = ${JSON.stringify(TRI_KEY_BY_ID)};
 const nf = new Intl.NumberFormat('en-US');
+const collator = new Intl.Collator('en');
 const $ = (id) => document.getElementById(id);
-const st = { q: '', qm: null, cat: '__all', nc: 'all', inf: false, sort: { col: 'v', dir: -1 }, hidden: new Set() };
 
-const termMatcher = (t) => {
-    let neg = false;
-    if (t.length > 1 && t[0] === '!' && t[1] !== ' ') { neg = true; t = t.slice(1); }
-    let fn;
-    if (!/[*?]/.test(t)) fn = (b) => b.includes(t);
-    else {
-        const rx = t.replace(/[.+^\${}()|[\\]\\\\]/g, '\\\\$&').replace(/\\*/g, '.*').replace(/\\?/g, '.');
-        try { const re = new RegExp(rx); fn = (b) => re.test(b); } catch (e) { fn = (b) => b.includes(t); }
+// ── Shared logic, identical to the live panel (see SHARED_JS / Function.prototype.toString) ──
+${SHARED_JS}
+
+const st = {
+    q: '', qm: null, ncMode: 'all',
+    catFilter: {}, triFlags: { inflated: 0, canEat: 0, canRead: 0, canOpen: 0 },
+    hiddenOnly: 0, hidden: new Set(),
+    sort: { col: 'value', dir: -1 },
+    page: 1, pageSize: 100,
+};
+const triAria = (v) => v === 1 ? 'true' : v === 2 ? 'false' : 'mixed';
+const flagsActive = () => st.hiddenOnly || st.triFlags.inflated || st.triFlags.canEat || st.triFlags.canRead || st.triFlags.canOpen;
+
+// Builds the same filter spec rebuildView passes to passesFilters; range bounds stay null here.
+function currentF() {
+    let catInc = null, catExc = null;
+    for (const c in st.catFilter) {
+        if (st.catFilter[c] === 1) (catInc || (catInc = new Set())).add(c);
+        else if (st.catFilter[c] === 2) (catExc || (catExc = new Set())).add(c);
     }
-    return neg ? (b) => !fn(b) : fn;
-};
-const compileQuery = (q) => {
-    if (!q || (!/[*?&]/.test(q) && !/(?:^|&)\\s*!\\S/.test(q))) return null;
-    const terms = q.split('&').map((t) => t.trim()).filter(Boolean).map(termMatcher);
-    return terms.length ? (b) => terms.every((fn) => fn(b)) : null;
-};
-const rarityClass = (r) => {
-    if (r == null) return 'r-none';
-    if (r === 500) return 'r-nc';
-    if (r === 180) return 'r-retired';
-    if (r === 200 || r === 250) return 'r-artifact';
-    if (r >= 111 && r <= 179) return 'r-brightred';
-    if (r >= 105 && r <= 110) return 'r-megarare';
-    if (r >= 101 && r <= 104) return 'r-special';
-    if (r >= 75 && r <= 100) return 'r-uncommon';
-    if (r >= 1 && r <= 74) return 'r-none';
-    return 'r-brightred';
-};
-const rarityLabel = (r) => (r == null ? '\\u2013' : r === 500 ? 'NC' : String(r));
-const VALUE_TEXT = { 'permanent buyable': 'Buyable' };
-const fmt = (v) => v == null ? '\\u2013'
-    : (typeof v === 'number' ? nf.format(v) : (VALUE_TEXT[String(v).trim().toLowerCase()] || String(v)));
-const esc = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const blobOf = (d) => ((d.n || '') + ' ' + (d.c || '') + ' ' + (d.i == null ? '' : d.i)).toLowerCase();
-
-const GET = {
-    n: (d) => (d.n || '').toLowerCase(), i: (d) => d.i == null ? -1 : d.i, q: (d) => d.q,
-    c: (d) => (d.c || '').toLowerCase(), r: (d) => d.r == null ? -1 : d.r,
-    v: (d) => typeof d.v === 'number' ? d.v : -1, t: (d) => typeof d.t === 'number' ? d.t : -1,
-};
+    return {
+        catInc, catExc, catL: (it) => it.catL, ncMode: st.ncMode, triFlags: st.triFlags,
+        rMin: null, rMax: null, vMin: null, vMax: null, qMin: null, qMax: null,
+        query: st.q, queryMatch: st.qm,
+    };
+}
 
 function view() {
+    const f = currentF();
     const out = [];
-    const stats = { u: 0, q: 0, v: 0, nc: 0 };
+    const stats = { unique: 0, qty: 0, value: 0, nc: 0 };
     for (let k = 0; k < DATA.length; k++) {
         const d = DATA[k];
-        if (st.hidden.has(k)) continue;
-        if (st.cat !== '__all' && (d.c || '') !== st.cat) continue;
-        if (st.nc === 'np' && d.nc) continue;
-        if (st.nc === 'nc' && !d.nc) continue;
-        if (st.inf && !d.f) continue;
-        if (st.q) {
-            const b = blobOf(d);
-            if (st.qm) { if (!st.qm(b)) continue; } else if (!b.includes(st.q)) continue;
-        }
+        if (st.hiddenOnly) { if (!st.hidden.has(k)) continue; }
+        else if (st.hidden.has(k)) continue;
+        if (!passesFilters(d, f)) continue;
         out.push(k);
-        stats.u++; stats.q += d.q; stats.nc += d.nc ? 1 : 0;
-        if (typeof d.v === 'number' && !d.nc) stats.v += d.v * d.q;
+        stats.unique++; stats.qty += d.qty; stats.nc += d.isNC ? 1 : 0;
+        // NC is a separate currency — excluded from the NP estimate.
+        if (typeof d.value === 'number' && !d.isNC) stats.value += d.value * d.qty;
     }
-    const g = GET[st.sort.col] || GET.v;
+    const get = SORT_GETTERS[st.sort.col] || SORT_GETTERS.value;
+    const dir = st.sort.dir;
     out.sort((a, b) => {
-        const va = g(DATA[a]), vb = g(DATA[b]);
-        const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
-        return cmp !== 0 ? st.sort.dir * cmp : 0;
+        const va = get(DATA[a]), vb = get(DATA[b]);
+        const cmp = typeof va === 'string' ? collator.compare(va, vb) : va - vb;
+        return cmp !== 0 ? dir * cmp : collator.compare(DATA[a].nameLC, DATA[b].nameLC);
     });
     return { out, stats };
 }
 
 function rowHTML(k, i) {
     const d = DATA[k];
-    const plus = encodeURIComponent(d.n || '').replace(/%20/g, '+');
+    const L = linkUrls(d.name || '');
+    const noPrice = isUnpriced(d.value);
+    const val = noPrice ? '???' : fmtValue(d.value);
+    const tot = noPrice ? '???' : fmtValue(d.total);
+    const inf = !noPrice && d.inflated;
     return '<div class="row cols' + (i % 2 ? ' alt' : '') + '" data-k="' + k + '">'
-      + '<div class="c-item"><img loading="lazy" decoding="async" alt="" src="' + esc(d.im) + '">'
-      + '<span class="name" title="' + esc(d.n) + '">' + esc(d.n) + '</span>'
+      + '<div class="c-item"><img loading="lazy" decoding="async" alt="" src="' + escHTML(d.image) + '">'
+      + '<span class="name" title="' + escHTML(d.name) + '">' + escHTML(d.name) + '</span>'
       + '</div>'
-      + '<div class="c-num val' + (d.f ? ' inf' : '') + '"' + (d.f ? ' title="itemdb flags this price as inflated"' : '') + '>' + fmt(d.v) + '</div>'
-      + '<div class="c-num qty">' + nf.format(d.q) + '</div>'
-      + '<div class="c-num tot">' + fmt(d.t) + '</div>'
-      + '<div class="c-num"><span class="rar ' + rarityClass(d.r) + '">' + rarityLabel(d.r) + '</span></div>'
-      + '<div class="c-cat"><span class="chip">' + esc(d.c || '\\u2013') + '</span></div>'
-      + '<div class="c-num id">' + (d.i == null ? '\\u2013' : d.i) + '</div>'
+      + '<div class="c-num val' + (inf ? ' inf' : '') + '"' + (inf ? ' title="itemdb flags this price as inflated"' : '') + '>' + val + '</div>'
+      + '<div class="c-num qty">' + nf.format(d.qty) + '</div>'
+      + '<div class="c-num tot">' + tot + '</div>'
+      + '<div class="c-num"><span class="rar ' + rarityClass(d.rarity) + '">' + rarityLabel(d.rarity) + '</span></div>'
+      + '<div class="c-cat"><span class="chip">' + escHTML(d.catL || '\\u2013') + '</span></div>'
+      + '<div class="c-num id">' + (d.id == null ? '\\u2013' : d.id) + '</div>'
       + '<div class="c-act"><button class="act x" title="Hide From View">\\u{1F441}</button></div>'
       + '<div class="c-links">'
-      + '<a class="lnk l-db" target="_blank" rel="noopener" href="https://itemdb.com.br/search?s=' + encodeURIComponent(d.n || '') + '">DB</a>'
-      + '<a class="lnk l-jn" target="_blank" rel="noopener" href="https://items.jellyneo.net/search/?name=' + plus + '&name_type=3">JN</a>'
-      + '<a class="lnk l-tp" target="_blank" rel="noopener" href="https://www.neopets.com/island/tradingpost.phtml?type=browse&criteria=item_exact&sort_by=newest&search_string=' + plus + '">TP</a>'
-      + '<a class="lnk l-ah" target="_blank" rel="noopener" href="https://www.neopets.com/genie.phtml?type=process_genie&criteria=exact&auctiongenie=' + plus + '">AH</a>'
+      + '<a class="lnk l-db" target="_blank" rel="noopener" href="' + L.db + '">DB</a>'
+      + '<a class="lnk l-jn" target="_blank" rel="noopener" href="' + L.jn + '">JN</a>'
+      + '<a class="lnk l-tp" target="_blank" rel="noopener" href="' + L.tp + '">TP</a>'
+      + '<a class="lnk l-ah" target="_blank" rel="noopener" href="' + L.ah + '">AH</a>'
       + '</div>'
       + '</div>';
 }
 
+// Tri rows for the Category menu, rebuilt from the data (Flags rows are static markup).
+function renderCatMenu() {
+    const list = $('catTriList');
+    list.innerHTML = '';
+    for (const c of CATS) {
+        const b = document.createElement('button');
+        b.className = 'tri'; b.type = 'button'; b.dataset.cat = c;
+        const v = st.catFilter[c] || 0;
+        b.dataset.tri = String(v);
+        b.setAttribute('role', 'checkbox');
+        b.setAttribute('aria-checked', triAria(v));
+        b.innerHTML = TRI_CELL;
+        const lab = document.createElement('span');
+        lab.className = 'tlabel'; lab.textContent = c;
+        b.append(lab);
+        list.append(b);
+    }
+}
+
 function render() {
     const { out, stats } = view();
-    $('vspacer').innerHTML = out.map(rowHTML).join('');
-    $('stUnique').textContent = nf.format(stats.u);
-    $('stQty').textContent = nf.format(stats.q);
-    $('stValue').textContent = nf.format(Math.round(stats.v));
+    const total = out.length;
+    const size = st.pageSize;
+    const totalPages = Math.max(1, Math.ceil(total / size));
+    if (st.page > totalPages) st.page = totalPages;
+    if (st.page < 1) st.page = 1;
+    // All data is embedded; pagination only limits how many rows are in the DOM at once.
+    const start = size === Infinity ? 0 : (st.page - 1) * size;
+    const pageRows = size === Infinity ? out : out.slice(start, start + size);
+    $('vspacer').innerHTML = pageRows.map((k, i) => rowHTML(k, start + i)).join('');
+    $('stUnique').textContent = nf.format(stats.unique);
+    $('stQty').textContent = nf.format(stats.qty);
+    $('stValue').textContent = nf.format(Math.round(stats.value));
     $('stNC').textContent = nf.format(stats.nc);
+    $('btnCat').classList.toggle('on', Object.keys(st.catFilter).length > 0);
+    $('btnFlags').classList.toggle('on', !!flagsActive());
+    $('pgInfo').textContent = 'Page ' + st.page + ' / ' + totalPages + ' \\u00b7 ' + nf.format(total) + ' item' + (total === 1 ? '' : 's');
+    $('pgPrev').disabled = st.page <= 1;
+    $('pgNext').disabled = st.page >= totalPages;
     for (const th of document.querySelectorAll('.th[data-sort]')) {
         const on = th.dataset.sort === st.sort.col;
         th.classList.toggle('on', on);
@@ -2247,27 +2330,78 @@ function render() {
     }
 }
 
+// Filter/sort/search change: back to page 1, top of list (mirrors the live viewChanged).
+function viewChanged() { st.page = 1; $('viewport').scrollTop = 0; render(); }
+
+// ── Anchored pop-menus (Category, Flags): fixed, positioned at the button, one open at a time ──
+let openMenu = null;
+function closeMenus() { if (openMenu) { openMenu.classList.add('closed'); openMenu = null; } }
+function toggleMenu(btn, menu) {
+    if (openMenu === menu) { closeMenus(); return; }
+    closeMenus();
+    const r = btn.getBoundingClientRect();
+    menu.style.top = (r.bottom + 6) + 'px';
+    menu.style.left = r.left + 'px';
+    menu.classList.remove('closed');
+    openMenu = menu;
+}
+$('btnCat').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu($('btnCat'), $('catMenu')); });
+$('btnFlags').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu($('btnFlags'), $('flagMenu')); });
+document.addEventListener('mousedown', (e) => {
+    if (openMenu && !openMenu.contains(e.target) && !e.target.closest('.dropdown')) closeMenus();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+
+$('catTriList').addEventListener('click', (e) => {
+    const t = e.target.closest('.tri'); if (!t) return;
+    const c = t.dataset.cat;
+    const v = ((st.catFilter[c] || 0) + 1) % 3;
+    if (v) st.catFilter[c] = v; else delete st.catFilter[c];
+    t.dataset.tri = String(v);
+    t.setAttribute('aria-checked', triAria(v));
+    viewChanged();
+});
+$('catReset').addEventListener('click', () => {
+    st.catFilter = {};
+    for (const t of $('catTriList').querySelectorAll('.tri')) { t.dataset.tri = '0'; t.setAttribute('aria-checked', 'mixed'); }
+    viewChanged();
+});
+$('flagMenu').addEventListener('click', (e) => {
+    const t = e.target.closest('.tri'); if (!t) return;
+    if (t.id === 'hiddenOnly') {
+        st.hiddenOnly = st.hiddenOnly ? 0 : 1;
+        t.dataset.tri = st.hiddenOnly ? '1' : '0';
+        t.setAttribute('aria-checked', st.hiddenOnly ? 'true' : 'false');
+    } else {
+        const key = TRI_KEY_BY_ID[t.id];
+        const v = ((st.triFlags[key] || 0) + 1) % 3;
+        st.triFlags[key] = v;
+        t.dataset.tri = String(v);
+        t.setAttribute('aria-checked', triAria(v));
+    }
+    viewChanged();
+});
+
 $('search').addEventListener('input', (e) => {
     st.q = e.target.value.trim().toLowerCase();
     st.qm = compileQuery(st.q);
-    render();
+    viewChanged();
 });
-$('catSel').addEventListener('change', (e) => { st.cat = e.target.value; render(); });
+// Same paired control the panel uses: NC only, NP only, or neither for everything.
 $('ncMode').addEventListener('click', (e) => {
     const seg = e.target.closest('.seg');
     if (!seg) return;
-    st.nc = seg.dataset.nc === st.nc ? 'all' : seg.dataset.nc;
-    for (const b of $('ncMode').querySelectorAll('.seg')) b.classList.toggle('on', b.dataset.nc === st.nc);
-    render();
+    st.ncMode = seg.dataset.nc === st.ncMode ? 'all' : seg.dataset.nc;
+    for (const b of $('ncMode').querySelectorAll('.seg')) b.classList.toggle('on', b.dataset.nc === st.ncMode);
+    viewChanged();
 });
-$('infOnly').addEventListener('change', (e) => { st.inf = e.target.checked; render(); });
 $('gridHead').addEventListener('click', (e) => {
     const th = e.target.closest('.th[data-sort]');
     if (!th) return;
     const col = th.dataset.sort;
     if (st.sort.col === col) st.sort.dir *= -1;
-    else st.sort = { col: col, dir: (col === 'n' || col === 'c') ? 1 : -1 };
-    render();
+    else st.sort = { col, dir: defaultSortDir(col) };
+    viewChanged();
 });
 $('vspacer').addEventListener('click', (e) => {
     const btn = e.target.closest('.x');
@@ -2275,14 +2409,16 @@ $('vspacer').addEventListener('click', (e) => {
     st.hidden.add(Number(btn.closest('.row').dataset.k));
     render();
 });
-$('themeSel').addEventListener('change', (e) => {
-    const t = e.target.value;
-    const r = $('root');
-    for (const c of ${JSON.stringify(THEME_CLASSES)}) r.classList.toggle('t-' + c, t === c);
+$('pgPrev').addEventListener('click', () => { if (st.page > 1) { st.page--; $('viewport').scrollTop = 0; render(); } });
+$('pgNext').addEventListener('click', () => { st.page++; $('viewport').scrollTop = 0; render(); });
+$('pgSize').addEventListener('change', (e) => {
+    st.pageSize = e.target.value === 'all' ? Infinity : Number(e.target.value);
+    st.page = 1; $('viewport').scrollTop = 0; render();
 });
+// Theme + zoom are baked onto #root at export time; the zoom control can still adjust it live.
 $('zoomSel').addEventListener('change', (e) => { $('root').style.setProperty('--zoom', e.target.value); });
-$('zoomSel').value = '1.5';
-$('root').style.setProperty('--zoom', '1.5');
+$('zoomSel').value = String(${gridZoom});
+renderCatMenu();
 render();
 </script>
 </body>
@@ -2343,10 +2479,7 @@ render();
             --scroll-thumb: rgba(255, 255, 255, 0.30);
             --scroll-thumb-hover: rgba(255, 255, 255, 0.5);
             --panel-blur: blur(12px) saturate(140%);
-            /* Custom column-resize cursor: black glyph with a white halo so it stays
-               legible on any theme, replacing the OS default double-arrow. */
             --cur-col-resize: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'><g fill='none' stroke='%23ffffff' stroke-width='4.5' stroke-linecap='round' stroke-linejoin='round'><path d='M13 4.5v17'/><path d='M8 9l-4 4 4 4'/><path d='M18 9l4 4-4 4'/></g><g fill='none' stroke='%23000000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M13 4.5v17'/><path d='M8 9l-4 4 4 4'/><path d='M18 9l4 4-4 4'/></g></svg>") 13 13, col-resize;
-            /* Matching pointer + arrow cursors in the same black-on-white-halo style. */
             --cur-pointer: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><path d='M9.4 13.2V4.6a2.1 2.1 0 0 1 4.2 0v6.1m0-1a2.1 2.1 0 0 1 4.2 0v1.4m0-0.7a2.05 2.05 0 0 1 4.1 0v1.9m0-1a2.05 2.05 0 0 1 4.1 0v6.1c0 4.3-2.9 7.6-7.4 7.6h-2.1c-2.4 0-4-0.9-5.2-2.6l-4.4-6.3a2.1 2.1 0 0 1 3.2-2.7z' fill='%23000000' stroke='%23ffffff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg>") 10 3, pointer;
             --cur-arrow: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'><path d='M7 2.5 7 18.2 11.1 14.4 14 21.4 17.2 20 14.4 13.3 19.8 13.1 Z' fill='%23000000' stroke='%23ffffff' stroke-width='1.6' stroke-linejoin='round'/></svg>") 7 3, default;
             --font: 'Inter', 'SF Pro Text', -apple-system, 'Segoe UI', system-ui, sans-serif;
@@ -2360,32 +2493,20 @@ render();
             -webkit-font-smoothing: antialiased;
             cursor: var(--cur-arrow);
         }
-        /* One cursor for everything clickable — anchors otherwise fall back to the
-           browser's own hand, which reads as a different style from ours. */
         .root a, .root a:hover, .root button:not(:disabled), .root select,
         .root label.switch, .root input[type="checkbox"] { cursor: var(--cur-pointer); }
 
-        /* ── Themes ──────────────────────────────────────────── */
-        /* One line per theme: these are flat lists of variable overrides with no structure to
-           read, and side by side they are far easier to diff against each other and against
-           the .root defaults above. Dark is the base .root block — every theme here overrides
-           it, so anything a theme omits falls through to Dark's value. Adding a theme means a
-           line here plus an entry in BUILTIN_THEMES; nothing else is keyed on the class name. */
         .root.t-forest { --bg-0: #091812; --bg-1: #0e231a; --bg-2: rgba(167, 243, 208, 0.06); --bg-3: rgba(167, 243, 208, 0.11); --line: rgba(167, 243, 208, 0.12); --line-strong: rgba(167, 243, 208, 0.22); --text: #e6f5ec; --muted: #92b8a4; --dim: #63836f; --acc: #2f9e5e; --acc-2: #7dd3a0; --acc-grad-2: #15803d; --good: #4ade80; --warn: #fbbf24; --bad: #f87171; --input-bg: rgba(0, 0, 0, 0.32); --img-bg: rgba(0, 0, 0, 0.38); --head-bg: rgba(167, 243, 208, 0.04); --row-line: rgba(167, 243, 208, 0.07); --row-alt: rgba(167, 243, 208, 0.025); --row-hover: rgba(47, 158, 94, 0.16); --option-bg: #0d2419; --toast-bg: rgba(7, 20, 14, 0.96); --backdrop: rgba(5, 16, 11, 0.6); --scroll-thumb: rgba(167, 243, 208, 0.32); --scroll-thumb-hover: rgba(167, 243, 208, 0.5); --panel-blur: blur(14px) saturate(140%); }
-        /* Midnight: deep navy, subtle purple, atmospheric glow */
         .root.t-midnight { --bg-0: #080c18; --bg-1: #0e1628; --bg-2: rgba(100, 120, 200, 0.04); --bg-3: rgba(100, 120, 200, 0.10); --line: rgba(100, 120, 200, 0.12); --line-strong: rgba(100, 120, 200, 0.25); --text: #e4e8f0; --muted: #7a8aa8; --dim: #4a5a70; --acc: #6a7ac0; --acc-2: #8a8ac0; --acc-grad-2: #8a4ac0; --good: #5a9a90; --warn: #c09050; --bad: #c85a7a; --input-bg: rgba(0, 0, 0, 0.40); --img-bg: rgba(60, 80, 140, 0.08); --head-bg: rgba(100, 120, 200, 0.04); --row-line: rgba(100, 120, 200, 0.08); --row-alt: rgba(100, 120, 200, 0.025); --row-hover: rgba(106, 122, 192, 0.10); --option-bg: #0e1628; --toast-bg: rgba(8, 12, 24, 0.96); --backdrop: rgba(4, 6, 16, 0.75); --scroll-thumb: rgba(100, 120, 200, 0.36); --scroll-thumb-hover: rgba(100, 120, 200, 0.55); --panel-blur: blur(16px) saturate(160%); }
         .root.t-retro { --bg-0: #eef6ff; --bg-1: #f6fbff; --bg-2: rgba(58, 110, 165, 0.08); --bg-3: rgba(58, 110, 165, 0.16); --line: rgba(58, 110, 165, 0.35); --line-strong: rgba(58, 110, 165, 0.55); --text: #1c3a5e; --muted: #3a6ea5; --dim: #7a92ad; --acc: #3a6ea5; --acc-2: #2a5d94; --acc-grad-2: #5c8bc4; --good: #2e7d32; --warn: #b45309; --bad: #c62828; --input-bg: #ffffff; --img-bg: rgba(58, 110, 165, 0.08); --head-bg: rgba(58, 110, 165, 0.10); --row-line: rgba(58, 110, 165, 0.14); --row-alt: rgba(58, 110, 165, 0.05); --row-hover: rgba(58, 110, 165, 0.13); --option-bg: #f6fbff; --toast-bg: #f6fbff; --backdrop: rgba(28, 58, 94, 0.35); --scroll-thumb: rgba(58, 110, 165, 0.35); --scroll-thumb-hover: rgba(58, 110, 165, 0.55); --panel-blur: none; --font: Verdana, Arial, Helvetica, sans-serif; }
-        /* Vapor palette: neon-sunset vaporwave — magenta #FF3DB8, cyan #2FE0E0, sunset orange #FF9A52 (accent grad) / amber #FFB84D, deep violet bg #260C3D/#3A1458 */
         .root.t-vaporwave { --bg-0: rgba(38, 12, 61, 0.98); --bg-1: rgba(58, 20, 88, 0.98); --bg-2: rgba(255, 90, 200, 0.07); --bg-3: rgba(255, 90, 200, 0.15); --line: rgba(47, 224, 224, 0.22); --line-strong: rgba(47, 224, 224, 0.45); --text: #fbe9fb; --muted: #d59ce6; --dim: #9370c0; --acc: #ff3db8; --acc-2: #2fe0e0; --acc-grad-2: #ff9a52; --good: #2fe0e0; --warn: #ffb84d; --bad: #ff4d7d; --input-bg: rgba(0, 0, 0, 0.32); --img-bg: rgba(178, 77, 255, 0.13); --head-bg: rgba(47, 224, 224, 0.06); --row-line: rgba(255, 90, 200, 0.10); --row-alt: rgba(178, 77, 255, 0.05); --row-hover: rgba(255, 61, 184, 0.16); --option-bg: #260c3d; --toast-bg: rgba(38, 12, 61, 0.96); --backdrop: rgba(16, 4, 30, 0.72); --scroll-thumb: rgba(255, 90, 200, 0.30); --scroll-thumb-hover: rgba(47, 224, 224, 0.55); --panel-blur: blur(16px) saturate(175%); }
 
-        /* ── Motion tokens ───────────────────────────────────── */
         .root {
             --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
             --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
             --ease-pop: cubic-bezier(0.34, 1.3, 0.4, 1);
         }
 
-        /* ── Backdrop ────────────────────────────────────────── */
         .backdrop {
             position: fixed; inset: 0; background: var(--backdrop);
             opacity: 1; transition: opacity 240ms var(--ease-inout);
@@ -2393,17 +2514,12 @@ render();
         }
         .backdrop.closed { opacity: 0; pointer-events: none; }
 
-        /* ── Panel shell (centered, non-draggable) ─────────────── */
         .panel {
             position: fixed;
             left: 50%;
             top: 50%;
             display: flex;
             flex-direction: column;
-            /* Default launch size, tuned so card view shows complete rows rather than a
-               clipped last one. max-width/height keep it inside a smaller screen (where it
-               falls back to filling the viewport), and the resize is remembered, so this is
-               only the first-run size. */
             width: 1906px;
             height: 1181px;
             min-width: 800px;
@@ -2449,33 +2565,22 @@ render();
             max-height: 100vh;
             border-radius: 0;
         }
-        /* Geometry tween for maximize/restore. Applied only for the duration of the
-           animation — inline px values animate; the .maximized class takes over after. */
         .panel.max-anim {
             transition: left 260ms var(--ease-inout), top 260ms var(--ease-inout),
                         width 260ms var(--ease-inout), height 260ms var(--ease-inout),
                         border-radius 200ms var(--ease-inout);
         }
-        /* Dragged panels are positioned by inline left/top, so the centering translate
-           has to go — but the open/close scale animation must survive it. */
         .panel.positioned { transform: scale(1); }
         .panel.positioned.closed { transform: scale(0.96); }
-        /* Applied for a single frame on the initial mount so a reload / navigation with the
-           panel already open snaps to its final state instead of replaying the open
-           animation (which read as a distracting slide-in). Removed next frame, so user
-           clicks still animate. */
         .no-anim { transition: none !important; animation: none !important; }
         .head { touch-action: none; cursor: grab; }
         .head.dragging { cursor: grabbing; }
 
-        /* ── Grid area wrapper ────────────────────────────────── */
         .grid-area {
             flex: 1;
             min-height: 0;
             display: flex;
             flex-direction: column;
-            /* Zoom is layout-based (row height + font + columns scale via --zoom),
-               so the viewport scrolls naturally instead of clipping. */
         }
         .grid-area > .gridhead {
             flex: none;
@@ -2485,7 +2590,6 @@ render();
             min-height: 0;
         }
 
-        /* ── Progress hairline ───────────────────────────────── */
         .progress {
             position: absolute; top: 0; left: 0; right: 0; height: 2px;
             opacity: 0; transition: opacity 200ms; pointer-events: none; z-index: 5;
@@ -2498,7 +2602,6 @@ render();
             transition: width 250ms ease;
         }
 
-        /* ── Header ──────────────────────────────────────────── */
         .head {
             display: flex; align-items: center; gap: 10px;
             height: 46px; padding: 0 12px 0 14px; flex: none;
@@ -2512,9 +2615,6 @@ render();
             background: linear-gradient(135deg, var(--acc), var(--acc-2));
             box-shadow: 0 0 10px rgba(124, 108, 255, 0.8);
         }
-        /* The header logo mark — the Crawler glyph in place of the old dot. Its gradient stops
-           read var(--acc)/var(--acc-2) inline, and the glow uses currentColor (= --acc), so the
-           whole mark recolours with every theme automatically. */
         .brand-badge {
             width: 15px; height: 15px; flex: none;
             display: grid; place-items: center;
@@ -2537,20 +2637,8 @@ render();
             color: var(--muted); cursor: var(--cur-pointer); font-size: 14px; line-height: 1;
         }
         .icon:hover { background: var(--bg-3); color: var(--text); }
+        .head-sep { width: 1px; height: 22px; flex: none; margin: 0 6px; background: var(--line-strong); }
 
-        /* Compact round icon buttons in the controls row — the inline twins of the minimised
-           info/settings pills (.launcher-info). Settings drops its text label to become an
-           icon-only gear, and Info joins it in the freed space. */
-        .ctl-round {
-            width: 30px; height: 30px; padding: 0; flex: none;
-            display: grid; place-items: center; border-radius: 50%; border: none;
-            background: var(--bg-2); color: var(--acc-2); cursor: var(--cur-pointer);
-            font-family: var(--mono); font-size: 15px; font-weight: 700; font-style: italic; line-height: 1;
-            transition: background 120ms, color 120ms;
-        }
-        .ctl-round:hover { background: var(--bg-3); color: var(--text); }
-
-        /* ── Controls & toolbar ──────────────────────────────── */
         .controls, .toolbar {
             display: flex; align-items: center; gap: 8px; flex: none;
             padding: 10px 12px; border-bottom: 1px solid var(--line);
@@ -2558,16 +2646,12 @@ render();
         .btn {
             display: inline-flex; align-items: center; gap: 6px;
             padding: 5px 12px; border-radius: 8px; cursor: var(--cur-pointer);
-            /* Subtle same-hue gradient (brighter bg-3 → base bg-2) for a touch of depth.
-               Both tokens are tints of each theme's own base, so this stays on-theme
-               everywhere without per-theme rules; primary/danger override as needed. */
             background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
             border: 1px solid var(--line-strong);
             color: var(--text); font-size: 12px; font-weight: 500;
             transition: filter 120ms, background 120ms, border-color 120ms, transform 60ms;
             white-space: nowrap;
         }
-        /* Segmented Rows / Cards view switch */
         .segjoin { display: inline-flex; }
         .segjoin .btn { border-radius: 0; }
         .segjoin .btn:first-child { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
@@ -2582,16 +2666,12 @@ render();
             box-shadow: 0 2px 14px rgba(124, 108, 255, 0.35);
         }
         .btn.primary:hover:not(:disabled) { filter: brightness(1.1); background: linear-gradient(135deg, var(--acc), var(--acc-grad-2)); }
-        /* Inline SVG icons. Fixed 15px in the toolbar/header (which don't scale with --zoom) so
-           they match the old glyph weight; the button's own flexbox centres them, so there are no
-           line-box hacks and the footprint is unchanged. Grid row-actions override below to size
-           in em, riding the same --zoom the rest of the grid uses. */
         .ic { width: 15px; height: 15px; flex: none; display: block; }
         .act .ic { width: 1.4em; height: 1.4em; }
         .btn.danger { color: var(--bad); border-color: rgba(248, 113, 113, 0.35); }
         .btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.12); }
-        /* Start and Stop share one fixed-width slot so swapping them never shifts Reprice. */
         .scanbtn { min-width: 122px; justify-content: center; }
+        #btnDeposit .ic, #btnReprice .ic { color: var(--acc-2); }
 
         .field { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
         .field input {
@@ -2600,15 +2680,10 @@ render();
             color: var(--text); font-family: var(--mono); font-size: 12px;
             appearance: textfield; -moz-appearance: textfield;
         }
-        /* The review table's qty fields are number inputs too — same spinner suppression,
-           otherwise the native arrows crowd a 62px column. */
         .rv-row input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
         .field input::-webkit-outer-spin-button, .field input::-webkit-inner-spin-button,
         .rv-row input[type="number"]::-webkit-outer-spin-button,
         .rv-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
-        /* Scan / ItemDB delay boxes (Settings) read as a min–max range, so the native spin
-           arrows just crowd the two narrow fields and the dash between them. Cache Expiry and
-           Chunk size keep theirs — they're single values you nudge. */
         .no-spin { appearance: textfield; -moz-appearance: textfield; }
         .no-spin::-webkit-outer-spin-button, .no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
         .field input:focus, .search input:focus, select:focus {
@@ -2616,11 +2691,6 @@ render();
             box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.25);
         }
 
-        /* ── Collapsible bars: shared open/closed animation ────
-           advrow and qbar collapse their bottom border, pagebar its top; transitioning
-           both widths is a no-op for whichever one an element doesn't have, and that is
-           what makes a single rule safe for all three. max-height is only a clip ceiling
-           — the tallest value works for every bar, since real height comes from content. */
         .advrow, .pagebar, .qbar, .cardbar {
             max-height: 120px; opacity: 1; overflow: hidden;
             transition:
@@ -2645,39 +2715,30 @@ render();
                 visibility 0s linear 220ms;
         }
 
-        /* ── Advanced filters row ────────────────────────────── */
         .advrow {
             display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; flex: none;
             padding: 8px 12px; border-bottom: 1px solid var(--line);
             background: var(--head-bg);
         }
         .advrow .field input { width: 84px; }
-        /* Rarity and quantity are 2–3 digit fields; only Value (NP) needs room for 7+ digits. */
         .advrow .field input.narrow { width: 50px; }
-        /* Rarity/Value/Qty grouped into one muted "ranges" chip so they read as a single control
-           rather than three heavy fields. Input widths are unchanged, so nothing is harder to hit. */
         .ranges { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 12px;
             padding: 4px 9px; border-radius: 8px; background: var(--bg-2); }
         .ranges .field { font-size: 11px; }
         .ranges .rsep { color: var(--dim); font-size: 10.5px; letter-spacing: 0.02em; }
 
-        /* ── Card-view sort bar ──────────────────────────────── */
         .cardbar {
             display: flex; align-items: center; gap: 8px; flex: none;
             padding: 6px 12px; border-bottom: 1px solid var(--line);
             background: var(--head-bg);
         }
         .cardbar select { padding: 4px 8px; font-size: 11.5px; }
-        /* Direction toggle: a square the width of its arrow, so the pair reads as one control
-           rather than a dropdown with a button bolted on. */
         .dirtoggle {
             padding: 4px 0; width: 26px; justify-content: center;
             font-size: 10px; color: var(--acc-2);
         }
         .btn.on { border-color: var(--acc); color: var(--acc-2); }
         .btn.gone, .field input.gone { display: none; }
-        /* Anchored pop-menus (Flags, View, Tools). Reparented to .root and positioned fixed (JS sets
-           top/left) so an ancestor's overflow:hidden — e.g. .advrow — can't clip them. */
         .dropdown { position: relative; display: inline-flex; }
         .btn .caret { font-size: 10px; opacity: .6; }
         .popmenu {
@@ -2697,7 +2758,6 @@ render();
             width: 22px; height: 20px; background: transparent; border: none; cursor: pointer; }
         .dice-btn:hover { filter: brightness(1.15); }
 
-        /* Tri-state filter rows (Category + Flags): empty → is (green) → is-not (red). */
         .tri-list { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
         .tri {
             display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
@@ -2726,15 +2786,11 @@ render();
         .tri-reset:hover { color: var(--text); }
         .tri-sep { height: 1px; background: var(--line); margin: 4px 2px; }
 
-        /* ── Pagination bar (page-by-page mode, animated) ────── */
         .pagebar {
             display: flex; align-items: center; gap: 10px; flex: none;
             padding: 7px 12px; border-top: 1px solid var(--line);
             background: var(--head-bg);
         }
-        /* Page count and item range stack into one slot, so the min-width that stops the bar
-           jittering as digit counts change belongs to the wrapper, not the top line. It is
-           sized for the longer of the two — "Items 8,371-8,460 of 8,460" beats "Page 2 / 94". */
         .pageinfo-wrap { display: flex; flex-direction: column; align-items: center; min-width: 172px; }
         .pageinfo {
             font-family: var(--mono); font-size: 12px; color: var(--muted);
@@ -2745,8 +2801,6 @@ render();
             font-variant-numeric: tabular-nums; text-align: center; line-height: 1.4;
         }
         .pagebar select { padding: 4px 6px; }
-        /* Both pager number boxes are deliberately narrow; the spinners would sit on top of
-           the digits at this width, and the fields already commit on Enter/blur. */
         .pagebar input[type="number"] { -moz-appearance: textfield; }
         .pagebar input[type="number"]::-webkit-outer-spin-button,
         .pagebar input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -2766,13 +2820,6 @@ render();
         .switch input:checked + .track { background: rgba(124, 108, 255, 0.45); border-color: var(--acc); }
         .switch input:checked + .track::after { transform: translateX(13px); background: #fff; }
 
-        /* ── Paired filter buttons ───────────────────────────── */
-        /* NC / NP. A checkbox could only say "hide NC", which left "only NC" with nowhere
-           to live. Two buttons instead, each exclusive with the other and each deselectable:
-           neither one lit is the resting state and shows everything, so the control covers
-           three states without a third button for the one that is simply "no filter". Built
-           like the row link block — one bordered surface split by a hairline — so the pair
-           reads as a single control rather than two buttons that happen to be adjacent. */
         .segset {
             display: inline-flex; align-items: stretch; gap: 0; flex: none;
             border: 1px solid var(--line-strong); border-radius: 7px;
@@ -2789,17 +2836,11 @@ render();
         }
         .segset .seg:first-child { border-left: none; }
         .segset .seg:hover { background: var(--bg-3); color: var(--text); }
-        /* A lit button reads as filled rather than merely tinted: this control has no label of
-           its own, so whether a filter is on has to be legible at a glance. */
         .segset .seg.on { background: var(--acc); color: #fff; }
         .segset .seg.on:hover { background: var(--acc); filter: brightness(1.08); }
         .segset .seg:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 
-        /* ── Stats strip ─────────────────────────────────────── */
         .stats {
-            /* Every card sizes to its content so none hogs width. Nothing stretches: the value
-               number reserves a fixed slot wide enough for its largest realistic figure (see
-               .num.accent) instead of filling the row or resizing as the total changes. */
             display: grid; grid-template-columns: repeat(4, auto); gap: 8px;
             padding: 10px 12px; flex: none; border-bottom: 1px solid var(--line);
         }
@@ -2812,12 +2853,8 @@ render();
             text-transform: uppercase; color: var(--dim); margin-bottom: 1px;
         }
         .stat .num { font-family: var(--mono); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
-        /* Reserve a stable slot for the value: 14 mono chars holds "99,999,999,999" (the largest
-           figure worth planning for), so the card neither stretches nor jumps as the total moves.
-           A rare larger total just grows past it; it never shrinks below. */
         .stat .num.accent { color: var(--acc-2); display: inline-block; min-width: 14ch; }
 
-        /* ── Search / select ─────────────────────────────────── */
         .search { position: relative; flex: 1; min-width: 160px; }
         .search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; stroke: var(--dim); pointer-events: none; }
         .search input {
@@ -2840,14 +2877,6 @@ render();
             color: var(--text); font-size: 12px; cursor: var(--cur-pointer);
         }
         select option { background: var(--option-bg); color: var(--text); }
-        /* The dropdown list itself scrolls once a select has more options than fit (Category
-           is the one that does, with every category in the box). The native popup honours the
-           standard scrollbar-color, so --scroll-thumb themes it (the ::-webkit rules cover the
-           in-page selects). Each theme's thumb opacity is kept high enough to read against the
-           popup's own list background — too faint (the old Dark 0.13) and it vanishes into it.
-           The track is --option-bg (the popup's own background), not transparent: on the native
-           popup a transparent track renders as a pale OS gutter that clashes with the dark list,
-           so pinning it to the list colour makes the gutter blend in like the grid's scrollbar. */
         select {
             scrollbar-width: thin;
             scrollbar-color: var(--scroll-thumb) var(--option-bg);
@@ -2868,21 +2897,15 @@ render();
         }
         .head select.mini:hover { color: var(--text); border-color: var(--line-strong); }
 
-        /* ── Grid ────────────────────────────────────────────── */
         .cols {
             display: grid;
-            /* Item | ID | Qty | Category | Rarity | Value | Total | Links | Move | Hide
-               Built by colTemplate() so columns can be drag-resized from the header. */
             grid-template-columns: var(--cols-template,
                 minmax(calc(90px * var(--zoom)), 1fr) calc(64px * var(--zoom)) calc(58px * var(--zoom))
                 calc(110px * var(--zoom)) calc(52px * var(--zoom)) calc(90px * var(--zoom))
                 calc(96px * var(--zoom)) calc(126px * var(--zoom)) calc(82px * var(--zoom)) calc(40px * var(--zoom)));
             align-items: center; column-gap: calc(8px * var(--zoom)); padding: 0 calc(12px * var(--zoom));
         }
-        /* Let the grid reach its natural width so it scrolls sideways rather than
-           clipping columns when the panel is too narrow. */
         .gridhead, .vspacer .row { min-width: var(--cols-min, 100%); }
-        /* Column resize grips (header only) */
         .th { position: relative; }
         .colgrip {
             position: absolute; top: 0; bottom: 0; right: calc(-6px * var(--zoom));
@@ -2893,8 +2916,6 @@ render();
             border-radius: 6px;
             transition: background 160ms var(--ease-out);
         }
-        /* The divider is always faintly visible so the resize zone is discoverable,
-           then grows into a glowing accent bar on hover and while dragging. */
         .colgrip::after {
             content: ''; width: 2px; height: 46%;
             border-radius: 2px; background: var(--line-strong); opacity: 0.6;
@@ -2915,7 +2936,7 @@ render();
         .gridhead {
             flex: none; height: calc(30px * var(--zoom)); border-bottom: 1px solid var(--line);
             background: var(--head-bg);
-            padding-right: calc(12px * var(--zoom) + 10px); /* align with the viewport scrollbar gutter */
+            padding-right: calc(12px * var(--zoom) + 10px);
         }
         .th {
             display: flex; align-items: center; gap: calc(3px * var(--zoom)); height: 100%;
@@ -2928,7 +2949,6 @@ render();
         .th:hover { color: var(--muted); }
         .th.on { color: var(--acc-2); text-shadow: 0 0 14px rgba(34, 211, 238, 0.45); }
         .th.num { justify-content: flex-end; text-align: right; }
-        /* Category sits between right-aligned numeric columns, so it reads best centred. */
         .th.ctr { justify-content: center; text-align: center; }
         .row .c-cat { text-align: center; min-width: 0; }
         .th.ctr:not([data-sort]) { cursor: default; }
@@ -2936,7 +2956,6 @@ render();
         .th.on .arr { opacity: 1; transform: translateY(0); }
 
         .viewport { flex: 1; overflow: auto; position: relative; overscroll-behavior: contain; scrollbar-gutter: stable; }
-        /* Shared themed scrollbars — the grid viewport and any scrollable dialog field. */
         .viewport, .paste-ta, .qchips, .guide-body, .rv-scroll, .rv-missing, .tabpane, .tri-list { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
         .viewport::-webkit-scrollbar, .paste-ta::-webkit-scrollbar, .qchips::-webkit-scrollbar, .guide-body::-webkit-scrollbar,
         .rv-scroll::-webkit-scrollbar, .rv-missing::-webkit-scrollbar, .tabpane::-webkit-scrollbar, .tri-list::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -2954,7 +2973,6 @@ render();
         }
 
         .vspacer { position: relative; width: 100%; }
-        /* Paged mode: rows flow naturally — no absolute positioning / translateY */
         .vspacer.paged { height: auto !important; }
         .vspacer.paged .row {
             position: relative !important;
@@ -2973,7 +2991,6 @@ render();
             animation: row-in 180ms var(--ease-out);
             transition: background 140ms var(--ease-inout);
         }
-        /* no "to" keyframe: rows settle at their natural opacity (e.g. ghosted rows) */
         @keyframes row-in {
             from { opacity: 0; }
         }
@@ -2988,7 +3005,6 @@ render();
         }
         .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5px * var(--zoom)); }
         .row .c-num { font-family: var(--mono); font-size: calc(12px * var(--zoom)); font-variant-numeric: tabular-nums; text-align: right; }
-        /* IDs are identifiers, not magnitudes — centre them like Category. */
         .row .c-num.id { text-align: center; }
         .row .tot { color: var(--muted); }
         .row .chip {
@@ -2996,35 +3012,21 @@ render();
             font-size: calc(10.5px * var(--zoom)); color: var(--muted); background: var(--bg-2);
             border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px;
         }
-        /* .nc-tag is gone: rarity 500 now renders as an "NC" rarity badge (.r-nc) in the
-           rarity slot, so nothing needs a second tag beside the item name. */
         .rar {
             display: inline-block; min-width: calc(30px * var(--zoom)); text-align: center;
             font-family: var(--mono); font-size: calc(10.5px * var(--zoom)); font-weight: 600;
             border-radius: 6px; padding: 1px 5px;
         }
-        /* --rar is the band colour as it appears on the card's dark thumbnail chip; the
-           color property is the same band on the row grid's own surface. They differ for
-           exactly two bands whose text is too dark to read on that chip: r1-74 and r101-104,
-           which measure 3.3:1 and 3.1:1 against it. Those get a lightened --rar (6.5 and
-           5.1); the other six use one value for both. */
         .r-none       { color: var(--dim); --rar: #8b93a7; }
         .r-uncommon   { color: #22c55e; background: rgba(34, 197, 94, 0.12); --rar: #22c55e; }
-        .r-special    { color: #aa4455; background: rgba(170, 68, 85, 0.14); --rar: #aa4455; }  /* 101-104 muted maroon (170,68,85) */
-        .r-megarare   { color: #ea580c; background: rgba(234, 88, 12, 0.14); --rar: #ea580c; }  /* 105-110 brown/orange */
-        .r-brightred  { color: #ef4444; background: rgba(239, 68, 68, 0.14); --rar: #ef4444; }  /* 111-179, unlisted */
-        .r-retired    { color: #9ca3af; background: rgba(156, 163, 175, 0.14); --rar: #9ca3af; } /* 180 grey */
-        .r-artifact   { color: #ef4444; background: rgba(239, 68, 68, 0.14); --rar: #ef4444; }  /* 200 / 250 bright red */
-        .r-nc         { color: #d8b4fe; background: rgba(216, 180, 254, 0.14); --rar: #d8b4fe; } /* 500 light purple */
+        .r-special    { color: #aa4455; background: rgba(170, 68, 85, 0.14); --rar: #aa4455; }
+        .r-megarare   { color: #ea580c; background: rgba(234, 88, 12, 0.14); --rar: #ea580c; }
+        .r-brightred  { color: #ef4444; background: rgba(239, 68, 68, 0.14); --rar: #ef4444; }
+        .r-retired    { color: #9ca3af; background: rgba(156, 163, 175, 0.14); --rar: #9ca3af; }
+        .r-artifact   { color: #ef4444; background: rgba(239, 68, 68, 0.14); --rar: #ef4444; }
+        .r-nc         { color: #d8b4fe; background: rgba(216, 180, 254, 0.14); --rar: #d8b4fe; }
 
-        /* ── Row actions ─────────────────────────────────────── */
-        /* Remove (left) and hide (right) as one object, built the same way as the link
-           block: a single bordered surface split by a hairline, segments clipped to the
-           corners. Ephemeral by design — the block is invisible until you hover the row,
-           since neither action is one you reach for while reading. */
         .c-act {
-            /* Centred, not end-aligned: the heading above it is centred, and with two
-               segments the block no longer fills its column the way the lone eye did. */
             display: inline-flex; align-items: stretch; gap: 0; justify-self: center;
             border: 1px solid var(--line-strong); border-radius: calc(5px * var(--zoom));
             background: var(--bg-2); overflow: hidden;
@@ -3039,42 +3041,27 @@ render();
             transition: background 140ms var(--ease-out), color 140ms var(--ease-out),
                         filter 140ms var(--ease-out);
         }
-        .act:first-child { border-left: none; } /* no divider against the outer border */
-        /* Both icons are now SVG and inherit the .act colour, so they tint and hover the same way
-           — the eye (hide) warms, the X (remove) reddens. The hide button carries both an open and
-           a closed eye; the .unhide class (set when the row is hidden) flips which one shows, so a
-           visible row reads "open eye, click to hide" and a hidden one "closed eye, click to show". */
+        .act:first-child { border-left: none; }
         .act.x .eye-closed { display: none; }
         .act.x.unhide .eye-open { display: none; }
         .act.x.unhide .eye-closed { display: block; }
         .act.rm:hover { background: rgba(248, 113, 113, 0.16); color: var(--bad); }
         .act.x:hover { background: rgba(251, 191, 36, 0.16); color: var(--warn); }
         .row:hover .c-act, .row.focused .c-act { opacity: 1; }
-        /* A hidden row keeps its block on screen: with the row itself greyed out, an
-           invisible control is the one thing standing between you and getting it back. */
         .c-act.has-unhide { opacity: 1; }
         .act.x.unhide { color: var(--acc-2); background: rgba(34, 211, 238, 0.14); }
         .act.x.unhide:hover { background: rgba(34, 211, 238, 0.24); }
 
         .val.inf { color: var(--warn); }
 
-        /* ── Row link segments ───────────────────────────────── */
-        /* One segmented control, not four chips: a single surface split into four equal
-           squares by hairlines, each its own link. Reads as one object in the row instead of
-           four competing blobs, and takes its colours from the theme like the rest of the
-           chrome. The original base64 icons come back under .link-icons on the root (Settings
-           → General → Link Images) — a class flip, never a re-render. Everything scales
-           with --zoom like the rest of the grid. */
         .c-links {
             display: inline-flex; justify-content: flex-start; justify-self: start;
-            gap: 0; /* the point of the control: the segments touch */
+            gap: 0;
             border: 1px solid var(--line-strong); border-radius: calc(5px * var(--zoom));
-            background: var(--bg-2); overflow: hidden; /* clips the segments to the corners */
+            background: var(--bg-2); overflow: hidden;
         }
         .lnk {
             display: inline-flex; align-items: center; justify-content: center;
-            /* Fixed width, not padding: the four labels are not the same width in a
-               proportional face, and unequal segments would break the block. */
             width: calc(24px * var(--zoom)); height: calc(16px * var(--zoom)); padding: 0;
             border: none; border-left: 1px solid var(--line-strong);
             border-radius: 0; outline: none; box-shadow: none;
@@ -3083,13 +3070,10 @@ render();
             text-decoration: none; background: transparent; color: var(--muted);
             transition: background 140ms var(--ease-out), color 140ms var(--ease-out);
         }
-        .lnk:first-child { border-left: none; } /* no divider against the outer border */
+        .lnk:first-child { border-left: none; }
         .lnk:hover { background: var(--bg-3); color: var(--acc-2); }
         .lnk:active { background: var(--line); }
 
-        /* Image fallback. The control dissolves back into loose icons: no shared surface, no
-           dividers, and font-size: 0 hides the label — the anchors carry it as text either
-           way, so switching modes never has to touch the DOM. */
         .link-icons .c-links {
             border: none; border-radius: 0; background: none; overflow: visible;
             gap: calc(4px * var(--zoom));
@@ -3104,7 +3088,6 @@ render();
         .link-icons .l-tp { background-image: url("${LINK_ICONS.tp}"); }
         .link-icons .l-ah { background-image: url("${LINK_ICONS.ah}"); }
 
-        /* ── Withdraw queue stepper ──────────────────────────── */
         .c-q { display: flex; align-items: center; justify-content: flex-start; gap: calc(2px * var(--zoom)); }
         .qm, .qp {
             width: calc(16px * var(--zoom)); height: calc(16px * var(--zoom)); display: grid; place-items: center;
@@ -3115,8 +3098,6 @@ render();
         .qm:hover, .qp:hover { color: var(--text); background: var(--bg-3); }
         .qm .ic, .qp .ic { width: calc(11px * var(--zoom)); height: calc(11px * var(--zoom)); }
         .qm[hidden] { display: none; }
-        /* Minimise the Move footprint: keep the resting row clean, showing − only when the
-           row is hovered/focused or already queued. Cards are unaffected. */
         .row .qm { opacity: 0; }
         .row:hover .qm, .row:focus-within .qm, .row.queued .qm { opacity: 1; }
         .qn {
@@ -3130,7 +3111,6 @@ render();
         .row.queued { background: rgba(34, 211, 238, 0.05); }
         .row.queued:hover { background: rgba(34, 211, 238, 0.09); }
 
-        /* ── Card grid view ──────────────────────────────────── */
         .cardgrid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(calc(190px * var(--zoom)), 1fr));
@@ -3150,7 +3130,6 @@ render();
         .card:hover { border-color: var(--line-strong); background: var(--bg-3); transform: translateY(-2px); }
         .card.queued { border-color: rgba(34, 211, 238, 0.45); background: rgba(34, 211, 238, 0.06); }
         .card.ghost { opacity: 0.5; }
-        /* Centered image on top; name wraps beneath it instead of truncating with "…". */
         .card .c-top { display: flex; flex-direction: column; align-items: center; text-align: center; gap: calc(6px * var(--zoom)); min-width: 0; }
         .card .c-top img {
             width: calc(44px * var(--zoom)); height: calc(44px * var(--zoom)); flex: none; align-self: center;
@@ -3161,16 +3140,8 @@ render();
             white-space: normal; overflow-wrap: anywhere; line-height: 1.3;
             display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
         }
-        /* Rarity rides the thumbnail's bottom-right corner rather than the card's, so it
-           reads as a property of the item instead of a headline. The overhang is equal on
-           both axes — uneven offsets make it look like it slipped rather than been placed —
-           and it hangs out far enough that most of the chip sits on card rather than on
-           artwork. Absolute, so it costs the card no height at all.
-           display:block on the wrapper and the image kills the inline baseline gap that
-           would otherwise add ~4px to every card the moment the image gains a wrapper. */
         .card .thumbwrap { position: relative; display: block; flex: none; }
         .card .thumbwrap img { display: block; }
-        /* Item thumbnails copy the name on click (both views). */
         .c-item img, .card .thumbwrap img { cursor: var(--cur-pointer); }
         .c-item img:hover, .card .thumbwrap img:hover { filter: brightness(1.15); }
         .card .rar {
@@ -3181,71 +3152,37 @@ render();
             background: rgba(6, 8, 12, 0.88); color: var(--rar);
             font-size: calc(8.5px * var(--zoom)); font-weight: 700;
         }
-        /* Settings → General → Card Rarity. Rows keep theirs either way. */
         .no-card-rarity .card .rar { display: none; }
-        /* Item description — always shown, clamped to 3 lines. Sized below the name so it
-           reads as supporting text rather than a second title. Deliberately *not* given a
-           3-line min-height: the card grid already stretches every card in a row to the
-           tallest, so reserving the space would only make short descriptions cost as much
-           as long ones without buying any alignment the varying name height doesn't
-           already break. It takes the height it needs and no more. */
         .card .desc {
             font-size: calc(10px * var(--zoom)); line-height: 1.4; color: var(--muted);
-            /* Centered to match the name and rarity above it. NOT display:flex — that
-               replaces the -webkit-box the clamp needs, and the description renders at full
-               length (measured: a 284-character one goes 72.7px to 135.7px). */
             text-align: center;
-            /* The bottom padding is not decoration: the line-clamp box lands ~3px short of
-               three full line boxes, which clips descenders on the third line. */
             padding: calc(4px * var(--zoom)) 0 calc(2px * var(--zoom));
             border-top: 1px solid var(--line);
             display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
             overflow: hidden; overflow-wrap: anywhere;
         }
-        /* No description (minimal/pricer intent, or an item ItemDB has none for) — collapse
-           completely, divider included, rather than leaving an empty ruled box. */
         .card .desc:empty { display: none; }
-        /* Three stacked label/value columns rather than four label:value rows — same three
-           numbers in two lines instead of four, which is where most of the description's
-           height comes from. Source order is lbl,v,lbl,v,lbl,v; column flow pairs each
-           label with the value that follows it. */
         .card .c-nums {
             display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: auto auto;
-            /* The auto margin lives here, not on .c-foot: it collects all of the card's slack
-               *above* the numbers, so the numbers and the footer form one block anchored to
-               the bottom edge. Every card in a grid row is stretched to the same height, so
-               that block then lines up across the row no matter how long the name or the
-               description above it runs. Previously the slack sat between the stats and the
-               footer, which is what made Qty/Value/Total drift card to card. */
             margin-top: auto;
             grid-auto-flow: column; gap: calc(2px * var(--zoom)) calc(8px * var(--zoom));
             font-family: var(--mono); font-size: calc(10.5px * var(--zoom)); font-variant-numeric: tabular-nums;
             text-align: center;
         }
         .card .c-nums .lbl { color: var(--dim); font-size: calc(9px * var(--zoom)); text-transform: uppercase; letter-spacing: 0.06em; }
-        /* nowrap is what makes the ellipsis work — and it is load-bearing for alignment.
-           ItemDB returns a handful of *textual* values ("Permanent Buyable", "2-3"), which
-           wrapped to two lines and pushed that card's whole stats block up by a line. */
         .card .c-nums .v { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .card .c-nums .v.acc { color: var(--acc-2); }
-        /* Same warn colour the Value column uses in the row grid, so an itemdb-flagged price
-           reads identically whichever view you are in. */
         .card .c-nums .v.inf { color: var(--warn); }
         .card .c-foot { display: flex; align-items: center; gap: calc(6px * var(--zoom)); min-width: 0; }
-        /* The segmented control is one object, so it neither grows nor wraps here; the
-           stepper takes the free space instead of the links being stretched to make it. */
         .card .c-foot .c-links { flex: 0 0 auto; justify-content: flex-start; flex-wrap: nowrap; }
         .card .c-foot .c-q { flex: 0 0 auto; margin-left: auto; }
         .link-icons .card .c-foot .c-links { flex-wrap: wrap; }
-        /* The same action block, pinned inside the card — never spills into neighbours. It
-           sits over the artwork, so it carries a solid backing rather than the row's tint. */
         .card .c-act {
             position: absolute; top: calc(6px * var(--zoom)); right: calc(6px * var(--zoom));
             justify-self: auto; z-index: 2; background: var(--bg-1);
         }
         .card:hover .c-act, .card.focused .c-act { opacity: 1; }
 
-        /* ── Queue chips ─────────────────────────────────────── */
         .qchips {
             display: flex; flex-wrap: wrap; gap: 4px;
             max-height: 52px; overflow-y: auto; flex: 1; min-width: 0;
@@ -3260,7 +3197,6 @@ render();
         .qchip:hover { border-color: rgba(248,113,113,0.5); color: var(--bad); }
         .qchip b { font-family: var(--mono); font-weight: 600; color: var(--acc-2); }
 
-        /* ── Withdraw queue bar (animated collapse) ──────────── */
         .qbar {
             display: flex; align-items: center; gap: 8px; flex: none;
             padding: 8px 12px; border-bottom: 1px solid var(--line);
@@ -3291,7 +3227,6 @@ render();
         .empty.show { display: grid; }
         .empty b { display: block; color: var(--muted); font-size: 14px; margin-bottom: 4px; }
 
-        /* ── Footer ──────────────────────────────────────────── */
         .foot {
             display: flex; align-items: center; justify-content: space-between; gap: 10px;
             flex: none; padding: 6px 14px; border-top: 1px solid var(--line);
@@ -3303,18 +3238,18 @@ render();
             border-radius: 4px; padding: 0 5px;
         }
 
-        /* ── Launcher & toast ────────────────────────────────── */
-        .launcher {
-            position: fixed; right: 18px; bottom: 18px;
-            display: flex; align-items: center; gap: 8px;
-            padding: 9px 16px; border-radius: 99px; cursor: var(--cur-pointer);
+        .launcher-dock {
+            position: fixed; left: 18px; bottom: 18px;
+            display: flex; align-items: center;
+            z-index: 2147483647; touch-action: none;
+            border-radius: 99px;
             background: var(--bg-0);
             backdrop-filter: blur(16px) saturate(150%);
             -webkit-backdrop-filter: blur(16px) saturate(150%);
             border: 1px solid var(--line-strong);
             box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5), 0 0 18px rgba(124, 108, 255, 0.22);
             color: var(--text); font-family: var(--font); font-size: 12.5px; font-weight: 600;
-            z-index: 2147483647; user-select: none;
+            user-select: none;
             opacity: 1; visibility: visible;
             transform: translateY(0) scale(1);
             will-change: transform, opacity;
@@ -3324,13 +3259,13 @@ render();
                 box-shadow 160ms var(--ease-inout),
                 visibility 0s linear 0s;
         }
-        .launcher:hover { transform: translateY(-2px) scale(1); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(124, 108, 255, 0.4); animation: launcher-pulse 900ms var(--ease-inout) infinite; }
+        .launcher-dock:hover { transform: translateY(-2px) scale(1); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 26px rgba(124, 108, 255, 0.4); animation: launcher-pulse 900ms var(--ease-inout) infinite; }
         @keyframes launcher-pulse {
             0%, 100% { box-shadow: 0 14px 40px rgba(0,0,0,0.55), 0 0 26px rgba(124,108,255,0.4); }
             50%      { box-shadow: 0 14px 40px rgba(0,0,0,0.55), 0 0 34px rgba(124,108,255,0.65); }
         }
-        .launcher:active { transform: translateY(0) scale(0.96); animation: none; }
-        .launcher.closed {
+        .launcher-dock.dragging { cursor: grabbing; }
+        .launcher-dock.closed {
             opacity: 0; visibility: hidden; pointer-events: none;
             transform: translateY(16px) scale(0.9);
             transition:
@@ -3338,17 +3273,23 @@ render();
                 opacity 160ms var(--ease-inout),
                 visibility 0s linear 180ms;
         }
+        .launcher {
+            position: relative;
+            display: flex; align-items: center; gap: 8px;
+            padding: 9px 16px; cursor: var(--cur-pointer);
+            background: transparent; border: none; -webkit-appearance: none; appearance: none;
+            color: var(--text); font-family: var(--font); font-size: 12.5px; font-weight: 600;
+            user-select: none;
+        }
         .launcher .count { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--acc-2); }
-        /* Info and settings pills sit right of the launcher; all three share the
-           .launcher show/hide transition, so the launcher shifts left to make room. */
-        #launcher { right: 104px; }
-        #btnGuide { right: 60px; }
+        .launcher-sep { width: 1px; height: 20px; flex: none; margin: 0 2px; background: var(--line); }
         .launcher-info {
             width: 34px; height: 34px; padding: 0;
             justify-content: center; border-radius: 50%;
             font-family: var(--mono); font-size: 15px; font-weight: 700; font-style: italic;
             color: var(--acc-2);
         }
+        .launcher-info:hover { background: var(--bg-3); }
 
         .toast {
             position: absolute; left: 50%; bottom: 44px; transform: translate(-50%, 8px);
@@ -3363,13 +3304,11 @@ render();
         .toast.show { opacity: 1; transform: translate(-50%, 0); }
         .toast.err { border-color: rgba(248, 113, 113, 0.5); color: var(--bad); }
 
-        /* ── Modal dialog ────────────────────────────────────── */
         .modal {
             position: fixed; inset: 0; z-index: 2147483648;
             display: grid; place-items: center;
             background: rgba(4, 6, 10, 0.5); backdrop-filter: blur(4px);
             opacity: 0; transition: opacity 200ms var(--ease-inout);
-            /* Explicit so the dialog always matches the panel, never the host page. */
             font-family: var(--font); font-size: 13px; line-height: 1.45; color: var(--text);
         }
         .modal.modal-in { opacity: 1; }
@@ -3396,28 +3335,20 @@ render();
             color: var(--text); font-family: inherit; font-size: 12px;
         }
         .modal-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
-        /* Wraps because the Theme tab's action row carries four buttons and the dialog is
-           capped at 92vw — on a narrow window they drop to a second line instead of clipping. */
         .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-        /* A per-tab group inside the footer bar. display:contents keeps its buttons as direct
-           flex items, so they share the footer's gap and wrap with everything else instead of
-           forming an island; .gone then hides the whole subtree. */
         .ma-group { display: contents; }
         .ma-group.gone { display: none; }
         .modal-card.wide { width: 420px; max-width: 90vw; }
         .modal-card.settings { width: 520px; max-width: 92vw; }
         .modal-card.review { width: 580px; max-width: 94vw; }
 
-        /* ── Paste-list review table ──────────────────────────── */
-        /* Columns: checkbox, item, unit price, qty input, MAX button (header only), stack value. */
-        .rv-scroll { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+        .rv-scroll { max-height: 255px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
         .rv-head, .rv-row {
             display: grid; grid-template-columns: 20px 1fr 74px 62px 46px 82px;
             align-items: center; gap: 8px; padding: 6px 10px;
         }
         .rv-head {
             position: sticky; top: 0; z-index: 1;
-            /* --bg-2 is translucent; layer it over opaque --bg-1 so scrolling rows don't bleed through the sticky header. */
             background: linear-gradient(var(--bg-2), var(--bg-2)), var(--bg-1); border-bottom: 1px solid var(--line);
             font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
             text-transform: uppercase; color: var(--dim);
@@ -3446,7 +3377,6 @@ render();
         .rv-stats b { color: var(--acc-2); font-family: var(--mono); font-weight: 600; }
         .rv-missing { font-size: 11px; color: var(--dim); line-height: 1.5; max-height: 56px; overflow-y: auto; }
 
-        /* Delete button for theme presets and custom keybinds. */
         .tv-x {
             width: 24px; height: 24px; flex: none; line-height: 1;
             border: 1px solid var(--line-strong); border-radius: 6px;
@@ -3455,14 +3385,9 @@ render();
         }
         .tv-x:hover { border-color: rgba(248, 113, 113, 0.5); color: var(--bad); }
 
-        /* ── Download chooser ─────────────────────────────────── */
-        /* The four current-view formats, 2x2. Tight gap — they are peers and the descriptions
-           live on hover, so the block reads as one compact cluster rather than a list. (Full-box
-           backup/restore lives under Settings · General · Manage Data, not here.) */
         .ex-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
         .ex-grid .btn { width: 100%; justify-content: center; }
 
-        /* ── Settings dialog ──────────────────────────────────── */
         .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
         .tab {
             padding: 7px 14px; border: 0; border-bottom: 2px solid transparent;
@@ -3471,15 +3396,7 @@ render();
         }
         .tab:hover { color: var(--text); }
         .tab.on { color: var(--text); border-bottom-color: var(--acc); }
-        /* scroll, not auto: rolling a palette rewrites the whole pane, and a scrollbar
-           that appears and vanishes between frames reads as a flash. Reserving the track
-           always costs a few px of width and removes the reflow entirely. */
-        /* overflow-y:auto so a short tab (Keybinds, General) shows no scrollbar at all.
-           scrollbar-gutter:stable is what makes that safe: it reserves the track width up
-           front, so switching from a short tab to a scrolling one no longer reflows the dialog
-           sideways — the layout jump that forcing overflow-y:scroll used to paper over. The
-           track is transparent, so the reserved gutter is invisible until there is a thumb. */
-        .tabpane { display: none; flex-direction: column; gap: 10px; max-height: 46vh; overflow-y: auto; scrollbar-gutter: stable; }
+        .tabpane { display: none; flex-direction: column; gap: 10px; height: 39vh; overflow-y: auto; scrollbar-gutter: stable; }
         .tabpane.on { display: flex; }
         .kb-row, .tv-row {
             display: flex; align-items: center; gap: 10px;
@@ -3494,7 +3411,6 @@ render();
             cursor: var(--cur-pointer);
         }
         .kb-key.listening { border-color: var(--acc); color: var(--acc-2); }
-        /* Each key rendered as its own cap so a "+" key never collides with a joiner. */
         .kcap {
             font-family: var(--mono); font-size: 10.5px; line-height: 1.5;
             padding: 0 6px; min-width: 9px; border-radius: 4px;
@@ -3502,19 +3418,15 @@ render();
         }
         .kb-key.listening .kcap { border-color: var(--acc); }
         .kb-unbound { color: var(--muted); font-style: italic; }
-        /* Custom-shortcut block at the foot of the Keybinds tab: a divider, the add row, then
-           the user's own binds — each a normal kb-row plus a remove button. */
         .kb-custom { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line);
                      display: flex; flex-direction: column; gap: 8px; }
         .kb-clist { display: flex; flex-direction: column; gap: 10px; }
-        /* Empty slot in fixed rows matching the custom rows' delete button, so every kb-key aligns vertically. */
         .kb-x-slot { width: 24px; flex: none; }
         .tv-row input[type="color"] {
             width: 42px; height: 26px; padding: 0; border-radius: 6px;
             background: none; border: 1px solid var(--line-strong); cursor: var(--cur-pointer);
         }
         .tv-row code { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
-        /* Hex twin for each picker — sits to its left and stays in sync both ways. */
         .tv-row input.tv-hex {
             width: 80px; flex: none; padding: 4px 7px; border-radius: 6px; text-align: center;
             background: var(--input-bg); border: 1px solid var(--line-strong);
@@ -3525,7 +3437,6 @@ render();
         }
         .tv-row input.tv-hex.bad { border-color: rgba(248, 113, 113, 0.6); color: var(--bad); }
 
-        /* ── Saved theme presets ──────────────────────────────── */
         .tv-presets { display: flex; flex-direction: column; gap: 5px; }
         .tv-preset { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--muted); }
         .tv-preset > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3534,20 +3445,11 @@ render();
             border: 1px solid var(--line-strong);
         }
         .tv-none { font-size: 11.5px; color: var(--dim); font-style: italic; }
-        /* Two switches per line. auto-fit rather than a fixed 2, so a narrow dialog folds
-           back to one column instead of clipping a label. */
-        .switch-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 10px 14px;
-        }
-        /* Settings subsection heading — lighter than .modal-head, to split the General tab into
-           Appearance / Manage Data without the weight of a dialog title. */
         .modal-subhead {
             font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
             color: var(--dim); margin: 4px 0 2px;
         }
         .modal-subhead:not(:first-child) { margin-top: 12px; }
-        /* Import / Export pair + drop target for full-storage backups (General tab). */
         .io-group { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
         .io-group .btn { width: 100%; justify-content: center; }
         .io-drop {
@@ -3559,16 +3461,12 @@ render();
         .io-drop b { color: var(--text); font-weight: 600; }
         .io-lz { margin-top: 8px; }
         .io-drop.drag { border-color: var(--acc); background: var(--row-hover); color: var(--text); }
-        /* A neutral bordered block, for a grouped action that is not destructive enough for
-           the red treatment below. */
         .modal-row-block {
             display: flex; flex-direction: column; gap: 8px;
             margin-top: 6px; padding: 12px; border-radius: 9px;
             border: 1px solid var(--line); background: var(--bg-2);
         }
-        .danger {
-            /* Extra breathing room above: this box now shares the General tab with everyday
-               switches, and a destructive action should not sit one gap away from them. */
+        .danger-box {
             margin-top: 6px; padding: 12px; border-radius: 9px;
             border: 1px solid rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.07);
         }
@@ -3577,7 +3475,6 @@ render();
         }
         .btn.danger-btn:hover { background: rgba(248, 113, 113, 0.2); }
 
-        /* ── Snapshot diff ────────────────────────────────────── */
         .diff-sec { font-size: 12px; }
         .diff-sec h5 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
         .diff-list { display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 11.5px; }
@@ -3587,7 +3484,7 @@ render();
         .diff-del span:last-child { color: var(--bad); }
         .diff-none { color: var(--dim); font-style: italic; }
         .modal-card.guide { width: 560px; max-width: 92vw; }
-        .guide-body { max-height: 62vh; overflow-y: auto; padding-right: 6px; }
+        .guide-body { max-height: 53vh; overflow-y: auto; padding-right: 6px; }
         .guide-body h4 {
             font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
             color: var(--acc-2); margin: 14px 0 5px;
@@ -3598,16 +3495,13 @@ render();
         .guide-body li { margin: 2px 0; }
         .guide-body li ul { margin: 2px 0; }
         .guide-body b { color: var(--text); font-weight: 600; }
-        /* Inline the real toolbar glyphs into the prose so the guide shows the exact icons on
-           the buttons. Sized to the text and nudged onto the baseline; colour is inherited, so
-           inside a <b> they pick up the emphasised text colour. */
         .guide-body .ic { display: inline-block; width: 1.05em; height: 1.05em; vertical-align: -0.16em; }
         .guide-body code {
             font-family: var(--mono); font-size: 11.5px; color: var(--acc-2);
             background: var(--bg-2); border-radius: 4px; padding: 1px 5px;
         }
         .paste-ta {
-            width: 100%; min-height: 160px; resize: vertical; box-sizing: border-box;
+            width: 100%; min-height: 136px; resize: vertical; box-sizing: border-box;
             font-family: var(--mono); font-size: 12px; line-height: 1.5;
             padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
             background: var(--input-bg); color: var(--text);
@@ -3623,13 +3517,16 @@ render();
     // ── UI: markup ──────────────────────────────────────────────
     const ICONS = {
         play: '<polygon points="8 5 19 12 8 19" fill="currentColor" stroke="none"/>',
+        stop: '<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>',
         dice: '<g fill="url(#sdbAccGrad)" stroke="none" transform="scale(0.046875)"><path d="M454.608,111.204L280.557,6.804C272.992,2.268,264.504,0,256,0c-8.507,0-16.996,2.268-24.557,6.797L57.392,111.204c-5.346,3.203-9.916,7.37-13.555,12.192l207.902,124.707c2.622,1.575,5.896,1.575,8.518,0L468.16,123.396C464.521,118.574,459.955,114.407,454.608,111.204z M177.16,131.738c-12.056,8.371-31.302,8.16-42.984-0.49c-11.684-8.65-11.382-22.463,0.678-30.842c12.056-8.386,31.304-8.16,42.992,0.482C189.525,109.539,189.22,123.344,177.16,131.738z M376.303,134.126c-12.056,8.38-31.306,8.16-42.992-0.49c-11.68-8.65-11.378-22.462,0.685-30.841c12.053-8.38,31.302-8.168,42.985,0.482C388.664,111.928,388.359,125.732,376.303,134.126z"/><path d="M246.136,258.366L38.004,133.523c-2.457,5.802-3.794,12.116-3.794,18.62v208.084c0,16.773,8.801,32.311,23.182,40.946l174.051,104.392c5.828,3.496,12.203,5.629,18.714,6.435V265.464C250.156,262.556,248.631,259.858,246.136,258.366z M75.845,369.736c-12.052-6.571-21.829-21.671-21.829-33.728c0-12.056,9.777-16.502,21.829-9.931c12.056,6.57,21.826,21.671,21.826,33.728C97.671,371.861,87.902,376.306,75.845,369.736z M75.845,247.869c-12.052-6.578-21.829-21.678-21.829-33.728c0-12.056,9.777-16.501,21.829-9.931c12.056,6.571,21.826,21.671,21.826,33.728C97.671,249.986,87.902,254.44,75.845,247.869z M136.779,342.014c-12.056-6.571-21.826-21.671-21.826-33.728s9.769-16.502,21.826-9.931c12.056,6.571,21.829,21.671,21.829,33.728C158.608,344.131,148.835,348.585,136.779,342.014z M197.716,436.158c-12.056-6.571-21.83-21.671-21.83-33.727c0-12.049,9.773-16.495,21.83-9.924c12.056,6.57,21.826,21.67,21.826,33.72C219.541,438.284,209.772,442.729,197.716,436.158z M197.716,314.292c-12.056-6.57-21.83-21.671-21.83-33.727c0-12.056,9.773-16.502,21.83-9.931c12.056,6.571,21.826,21.671,21.826,33.727C219.541,316.417,209.772,320.863,197.716,314.292z"/><path d="M473.992,133.523L265.864,258.366c-2.494,1.492-4.02,4.19-4.02,7.098V512c6.506-0.806,12.889-2.939,18.714-6.435l174.051-104.392c14.381-8.635,23.182-24.172,23.182-40.946V152.143C477.79,145.64,476.453,139.326,473.992,133.523z M321.232,262.932c12.053-6.571,21.826-2.125,21.826,9.931c0,12.049-9.773,27.149-21.826,33.72c-12.06,6.571-21.83,2.125-21.83-9.924C299.402,284.604,309.172,269.503,321.232,262.932z M321.232,448.735c-12.06,6.57-21.83,2.125-21.83-9.931s9.77-27.15,21.83-33.728c12.053-6.571,21.826-2.118,21.826,9.931C343.058,427.064,333.285,442.164,321.232,448.735z M322.536,377.663c-12.056,6.571-21.83,2.117-21.83-9.939c0-12.048,9.773-27.149,21.83-33.72c12.056-6.57,21.826-2.125,21.826,9.931S334.592,371.085,322.536,377.663z M427.32,386.403c-12.056,6.571-21.826,2.125-21.826-9.931c0-12.056,9.769-27.156,21.826-33.72c12.056-6.578,21.829-2.133,21.829,9.924C449.149,364.732,439.376,379.833,427.32,386.403z M427.32,315.332c-12.056,6.563-21.826,2.125-21.826-9.931c0-12.056,9.769-27.157,21.826-33.728c12.056-6.571,21.829-2.125,21.829,9.931C449.149,293.653,439.376,308.761,427.32,315.332z M427.32,244.253c-12.056,6.57-21.826,2.125-21.826-9.924c0-12.056,9.769-27.157,21.826-33.728c12.056-6.571,21.829-2.125,21.829,9.931C449.149,222.582,439.376,237.682,427.32,244.253z"/></g>',
+        palette: '<g fill="url(#sdbAccGrad)" fill-rule="evenodd" stroke="none" transform="scale(0.048736)"><path d="M492.19,255.101c-2.954-65.279-31.045-127.694-79.098-175.748c-25.675-25.675-55.349-45.636-88.195-59.328C293.024,6.739,259.809,0.003,226.174,0.003c-61.758,0-118.927,23.158-160.978,65.208c-30.067,30.066-50.775,68.312-59.888,110.6c-8.761,40.661-6.646,84.015,6.12,125.374l42.297,9.543c17.819-19.393,43.128-30.516,69.437-30.516c51.983,0,94.274,42.292,94.274,94.275c0,25.455-9.997,49.316-28.15,67.186l11.031,41.955c21.707,5.852,43.898,8.816,65.957,8.818c0.008,0,0.006,0,0.014,0c61.742,0,118.907-23.154,160.948-65.195C472.114,382.37,495.182,321.233,492.19,255.101z M323.777,77.013c20.856,0,37.765,16.907,37.765,37.764c0,20.857-16.907,37.764-37.765,37.764c-20.856,0-37.764-16.907-37.764-37.764C286.013,93.92,302.921,77.013,323.777,77.013z M101.7,203.304c-20.856,0-37.764-16.907-37.764-37.764s16.907-37.764,37.764-37.764s37.764,16.907,37.764,37.764S122.556,203.304,101.7,203.304z M201.028,127.777c-20.856,0-37.764-16.907-37.764-37.764s16.907-37.764,37.764-37.764c20.857,0,37.764,16.907,37.764,37.764S221.884,127.777,201.028,127.777z M326.112,409.29c-29.821,0-53.996-24.175-53.996-53.997c0-29.821,24.175-53.997,53.996-53.997c29.822,0,53.997,24.176,53.997,53.997C380.109,385.115,355.933,409.29,326.112,409.29z M396.607,266.935c-20.855,0-37.764-16.906-37.764-37.763c0-20.857,16.907-37.764,37.764-37.764c20.857,0,37.765,16.907,37.765,37.764C434.372,250.028,417.464,266.935,396.607,266.935z"/></g>',
         box: '<path d="M12 3 20 7.5v9L12 21 4 16.5v-9Z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/>',
         refresh: '<path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>',
         gear: '<g fill="url(#sdbAccGrad)" stroke="none"><path transform="scale(0.046875)" d="M502.325,307.303l-39.006-30.805c-6.215-4.908-9.665-12.429-9.668-20.348c0-0.084,0-0.168,0-0.252c-0.014-7.936,3.44-15.478,9.667-20.396l39.007-30.806c8.933-7.055,12.093-19.185,7.737-29.701l-17.134-41.366c-4.356-10.516-15.167-16.86-26.472-15.532l-49.366,5.8c-7.881,0.926-15.656-1.966-21.258-7.586c-0.059-0.06-0.118-0.119-0.177-0.178c-5.597-5.602-8.476-13.36-7.552-21.225l5.799-49.363c1.328-11.305-5.015-22.116-15.531-26.472L337.004,1.939c-10.516-4.356-22.646-1.196-29.701,7.736l-30.805,39.005c-4.908,6.215-12.43,9.665-20.349,9.668c-0.084,0-0.168,0-0.252,0c-7.935,0.014-15.477-3.44-20.395-9.667L204.697,9.675c-7.055-8.933-19.185-12.092-29.702-7.736L133.63,19.072c-10.516,4.356-16.86,15.167-15.532,26.473l5.799,49.366c0.926,7.881-1.964,15.656-7.585,21.257c-0.059,0.059-0.118,0.118-0.178,0.178c-5.602,5.598-13.36,8.477-21.226,7.552l-49.363-5.799c-11.305-1.328-22.116,5.015-26.472,15.531L1.939,174.996c-4.356,10.516-1.196,22.646,7.736,29.701l39.006,30.805c6.215,4.908,9.665,12.429,9.668,20.348c0,0.084,0,0.167,0,0.251c0.014,7.935-3.44,15.477-9.667,20.395L9.675,307.303c-8.933,7.055-12.092,19.185-7.736,29.701l17.134,41.365c4.356,10.516,15.168,16.86,26.472,15.532l49.366-5.799c7.882-0.926,15.656,1.965,21.258,7.586c0.059,0.059,0.118,0.119,0.178,0.178c5.597,5.603,8.476,13.36,7.552,21.226l-5.799,49.364c-1.328,11.305,5.015,22.116,15.532,26.472l41.366,17.134c10.516,4.356,22.646,1.196,29.701-7.736l30.804-39.005c4.908-6.215,12.43-9.665,20.348-9.669c0.084,0,0.168,0,0.251,0c7.936-0.014,15.478,3.44,20.396,9.667l30.806,39.007c7.055,8.933,19.185,12.093,29.701,7.736l41.366-17.134c10.516-4.356,16.86-15.168,15.532-26.472l-5.8-49.366c-0.926-7.881,1.965-15.656,7.586-21.257c0.059-0.059,0.119-0.119,0.178-0.178c5.602-5.597,13.36-8.476,21.225-7.552l49.364,5.799c11.305,1.328,22.117-5.015,26.472-15.531l17.134-41.365C514.418,326.488,511.258,314.358,502.325,307.303z M281.292,329.698c-39.68,16.436-85.172-2.407-101.607-42.087c-16.436-39.68,2.407-85.171,42.087-101.608c39.68-16.436,85.172,2.407,101.608,42.088C339.815,267.771,320.972,313.262,281.292,329.698z"/></g>',
         filter: '<polygon points="3 5 21 5 14 13 14 19 10 21 10 13"/>',
         list: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
         grid: '<rect x="4" y="4" width="7" height="7" rx="1.2"/><rect x="13" y="4" width="7" height="7" rx="1.2"/><rect x="4" y="13" width="7" height="7" rx="1.2"/><rect x="13" y="13" width="7" height="7" rx="1.2"/>',
+        sliders: '<g fill="currentColor" stroke="none" transform="scale(0.75)"><path d="M3,8h16.1c0.4,1.7,2,3,3.9,3s3.4-1.3,3.9-3H29c0.6,0,1-0.4,1-1s-0.4-1-1-1h-2.1c-0.4-1.7-2-3-3.9-3s-3.4,1.3-3.9,3H3C2.4,6,2,6.4,2,7S2.4,8,3,8z"/><path d="M29,15H15.9c-0.4-1.7-2-3-3.9-3s-3.4,1.3-3.9,3H3c-0.6,0-1,0.4-1,1s0.4,1,1,1h5.1c0.4,1.7,2,3,3.9,3s3.4-1.3,3.9-3H29c0.6,0,1-0.4,1-1S29.6,15,29,15z"/><path d="M29,24h-2.1c-0.4-1.7-2-3-3.9-3s-3.4,1.3-3.9,3H3c-0.6,0-1,0.4-1,1s0.4,1,1,1h16.1c0.4,1.7,2,3,3.9,3s3.4-1.3,3.9-3H29c0.6,0,1-0.4,1-1S29.6,24,29,24z"/></g>',
         updown: '<polyline points="8 9 12 5 16 9"/><polyline points="8 15 12 19 16 15"/>',
         stack: '<rect x="4" y="4" width="12" height="12" rx="2"/><path d="M20 8v10a2 2 0 0 1-2 2H8"/>',
         delta: '<path d="M19 21 11.5 4.13M20 21 12 3 4 21Z"/>',
@@ -3673,28 +3570,46 @@ render();
         <div class="root" id="root">
             <svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs><linearGradient id="sdbAccGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--acc)"/><stop offset="1" stop-color="var(--acc-2)"/></linearGradient></defs></svg>
             <div class="backdrop closed" id="backdrop"></div>
-            <button class="launcher closed" id="launcher" title="Open SDBCrawler">
-                ${crawlerBadge('sdbcrawlerBadgeLaunch')} SDBCrawler <span class="count" id="launcherCount"></span>
-            </button>
-            <button class="launcher launcher-info closed" id="btnGuide" title="User guide">${icon('info')}</button>
-            <button class="launcher launcher-info closed" id="btnSettings" title="Settings">${icon('gear')}</button>
+            <div class="launcher-dock closed" id="launcherDock">
+                <button class="launcher" id="launcher" title="Open SDBCrawler (drag to move)">
+                    ${crawlerBadge('sdbcrawlerBadgeLaunch')} SDBCrawler <span class="count" id="launcherCount"></span>
+                </button>
+                <span class="launcher-sep" aria-hidden="true"></span>
+                <button class="launcher launcher-info" id="btnGuide" title="User guide">${icon('info')}</button>
+                <button class="launcher launcher-info" id="btnSettings" title="Settings">${icon('gear')}</button>
+            </div>
             <section class="panel closed" id="panel">
                 <div class="progress" id="progress"><i id="progressBar"></i></div>
                 <header class="head" id="dragHandle">
                     <div class="brand">${crawlerBadge('sdbcrawlerBadgeHead')}SDB<b>Crawler</b></div>
                     <span class="pill" id="statusPill">Idle</span>
                     <div class="spacer"></div>
+                    <button class="icon" id="btnInfo" title="User guide">${icon('info')}</button>
+                    <button class="icon" id="btnItemdbCfg" title="Settings">${icon('gear')}</button>
+                    <span class="dropdown">
+                        <button class="icon" id="btnTheme" type="button" aria-haspopup="true" aria-expanded="false" title="Theme">${icon('palette')}</button>
+                        <div class="popmenu closed" id="themeMenu" role="group" aria-label="Theme">
+                            <div class="group-label row-label">Theme
+                                <button class="dice-btn" id="btnRollTheme" type="button" title="Roll a random theme">${icon('dice')}</button>
+                            </div>
+                            <select class="mini" id="themeSel" title="Theme">
+                                <option value="dark">Dark</option>
+                                <option value="forest">Forest</option>
+                                <option value="retro">Retro</option>
+                                <option value="vaporwave">Vapor</option>
+                            </select>
+                            <button class="btn menu-item" id="themeCustomize" type="button" title="Open the full theme customizer in Settings">${icon('palette')} Customize&#x2026;</button>
+                        </div>
+                    </span>
+                    <span class="head-sep" aria-hidden="true"></span>
                     <button class="icon" id="btnMax" title="Maximize / Restore">${icon('maximize')}</button>
                     <button class="icon" id="btnMin" title="Minimize">${icon('minus')}</button>
                 </header>
                 <div class="controls">
                     <button class="btn primary scanbtn" id="btnStart" title="Scan your SDB (resumes if interrupted)">${icon('play')} Start scan</button>
-                    <button class="btn danger scanbtn gone" id="btnStop" title="Stop current operation">Stop</button>
+                    <button class="btn danger scanbtn gone" id="btnStop" title="Stop current operation">${icon('stop')} Stop</button>
                     <button class="btn" id="btnReprice" title="Refresh prices (no re-scan)">${icon('refresh')} Reprice</button>
-                    <div class="spacer"></div>
-                    <button class="btn primary" id="btnDeposit" title="Deposits inventory to SDB">${icon('box')}</button>
-                    <button class="ctl-round" id="btnInfo" title="User guide">${icon('info')}</button>
-                    <button class="ctl-round" id="btnItemdbCfg" title="Settings">${icon('gear')}</button>
+                    <button class="btn" id="btnDeposit" title="Deposit your inventory into the SDB">${icon('box')} Deposit</button>
                 </div>
                 <div class="stats">
                     <div class="stat" title="Counts the current view &#xB7; filters apply"><span class="label">Unique items</span><span class="num" id="stUnique">0</span></div>
@@ -3713,7 +3628,7 @@ render();
                     <button class="btn" id="btnAdv" title="Category, NP/NC, inflated, use type, rarity, value &amp; quantity filters">${icon('filter')} Filters</button>
                     <button class="btn gone" id="btnHidden" title="Toggle hidden rows &#xB7; Shift-click: unhide all"></button>
                     <span class="dropdown">
-                        <button class="btn" id="btnView" type="button" aria-haspopup="true" aria-expanded="false" title="Layout, scroll mode, theme &amp; zoom">${icon('grid')} View <span aria-hidden="true" class="caret">&#x25BE;</span></button>
+                        <button class="btn" id="btnView" type="button" aria-haspopup="true" aria-expanded="false" title="Layout, scroll, zoom &amp; appearance">${icon('sliders')} View <span aria-hidden="true" class="caret">&#x25BE;</span></button>
                         <div class="popmenu closed" id="viewMenu" role="group" aria-label="View options">
                             <div class="group-label">Layout</div>
                             <span class="segjoin" role="group" aria-label="View mode">
@@ -3725,22 +3640,29 @@ render();
                                 <button class="btn" id="btnScroll" title="Continuous virtual scroll">${icon('updown')} Scroll</button>
                                 <button class="btn" id="btnPaged" title="Page-by-page view">${icon('stack')} Paged</button>
                             </span>
-                            <div class="group-label row-label">Theme
-                                <button class="dice-btn" id="btnRollTheme" type="button" title="Roll a random theme">${icon('dice')}</button>
-                            </div>
-                            <!-- themeSel options are rebuilt by rebuildThemeDropdown on mount and after each theme change. -->
-                            <select class="mini" id="themeSel" title="Theme">
-                                <option value="dark">Dark</option>
-                                <option value="forest">Forest</option>
-                                <option value="retro">Retro</option>
-                                <option value="vaporwave">Vapor</option>
-                            </select>
                             <div class="group-label">Zoom</div>
-                            <select class="mini" id="gridZoomSel" title="Grid zoom">
+                            <select class="mini" id="gridZoomSel" title="Grid zoom (scales the data grid, not the controls)">
+                                <option value="0.75">50%</option>
                                 <option value="1.125">75%</option>
+                                <option value="1.35">90%</option>
                                 <option value="1.5">100%</option>
+                                <option value="1.65">110%</option>
                                 <option value="1.875">125%</option>
+                                <option value="2.25">150%</option>
                             </select>
+                            <div class="group-label">Appearance</div>
+                            <label class="switch" title="Tint card backgrounds with the item&#x2019;s dominant colour from ItemDB &#xB7; card view only &#xB7; raises the ItemDB detail level to Full, which is where the colour comes from">
+                                <input type="checkbox" id="cardColorize"${cardColorize ? ' checked' : ''}><span class="track"></span>Colored Cards
+                            </label>
+                            <label class="switch" title="Show the item&#x2019;s rarity on its thumbnail in card view &#xB7; the row grid keeps its Rarity column either way">
+                                <input type="checkbox" id="cardRarity"${cardRarity ? ' checked' : ''}><span class="track"></span>Card Rarity
+                            </label>
+                            <label class="switch" title="Round large numbers in the row grid and the totals bar &#xB7; 1,234,567 becomes 1.2M, with the exact figure on hover &#xB7; cards always round">
+                                <input type="checkbox" id="shortValues"${shortValues ? ' checked' : ''}><span class="track"></span>Simplify Numbers
+                            </label>
+                            <label class="switch" title="Show the four lookup links as the original icons instead of the DB / JN / TP / AH block">
+                                <input type="checkbox" id="linkImages"${linkImages ? ' checked' : ''}><span class="track"></span>Link Images
+                            </label>
                         </div>
                     </span>
                     <span class="dropdown">
@@ -3809,14 +3731,11 @@ render();
                     </label>
                     <button class="btn primary" id="btnWithdraw" title="Move every queued item out of your SDB to the selected destination">Move to inventory</button>
                 </div>
-                <!-- Card view has no clickable column headings, so sorting gets its own bar.
-                     Collapsed (and inert) in row view via the shared .closed animation. -->
                 <div class="cardbar closed" id="cardBar">
                     <label class="field" for="cardSortSel">Sort by</label>
                     <select id="cardSortSel" title="Which column the cards are sorted by &#xB7; the same columns the row view&#x2019;s headings offer"></select>
                     <button class="btn dirtoggle" id="cardSortDir"></button>
                 </div>
-                <!-- Grid area: scaled by zoom -->
                 <div class="grid-area" id="gridArea">
                     <div class="gridhead cols" id="gridHead">
                         <button class="th" data-sort="name">Item <span class="arr"></span><span class="colgrip" data-col="item" title="Drag to resize &#xB7; double-click to reset"></span></button>
@@ -3843,8 +3762,6 @@ render();
                     </div>
                     <button class="btn" id="btnNext">Next ${icon('arrowRight')}</button>
                     <label class="field">Page
-                        <!-- 42px is the measured floor for a 4-digit page number; 32px clips at
-                             3, which a big box reaches at any small page size. -->
                         <input id="pageJump" type="number" min="1" style="width:42px" title="Jump to a page &#xB7; Enter to go">
                     </label>
                     <button class="btn" id="btnJump">Go</button>
@@ -3884,7 +3801,7 @@ render();
     const THEME_CLASSES = BUILTIN_THEMES.filter(([v]) => v !== 'dark').map(([v]) => v);
     const THEMES = [...BUILTIN_THEMES.map(([v]) => v), 'custom'];
     const FIRST_RUN_THEME = 'dark';
-    const GRID_ZOOMS = [1.125, 1.5, 1.875];
+    const GRID_ZOOMS = [0.75, 1.125, 1.35, 1.5, 1.65, 1.875, 2.25];
 
     // ── Keybinds ───────────────────────────────────────────────
     const KEYBINDS = [
@@ -3996,7 +3913,7 @@ render();
         const active = activePresetName();
         let html = BUILTIN_THEMES.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
         html += presets.map((p) => `<option value="preset:${esc(p.name)}">${esc(p.name)}</option>`).join('');
-        if (state.theme === 'custom' && !active) html += '<option value="custom">Custom (unsaved)</option>';
+        if (state.theme === 'custom' && !active) html += '<option value="custom">Random</option>';
         ui.themeSel.innerHTML = html;
         ui.themeSel.value = state.theme !== 'custom' ? state.theme
             : (active ? `preset:${active}` : 'custom');
@@ -4283,17 +4200,92 @@ render();
         ui.dragHandle.addEventListener('pointercancel', endDrag);
     }
 
+    const LAUNCHER_MARGIN = 18;
+    function applyLauncherCorner(corner) {
+        const d = ui.launcherDock;
+        if (!d) return;
+        const CORNERS = new Set(['tl','tr','bl','br','tc','bc','lc','rc']);
+        if (!CORNERS.has(corner)) corner = 'bl';
+        d.style.left = d.style.right = d.style.top = d.style.bottom = 'auto';
+        d.style.marginLeft = d.style.marginTop = '0';
+        const m = `${LAUNCHER_MARGIN}px`;
+        if (corner === 'tl' || corner === 'bl' || corner === 'lc') d.style.left = m;
+        else if (corner === 'tr' || corner === 'br' || corner === 'rc') d.style.right = m;
+        else { d.style.left = '50%'; d.style.marginLeft = `${-d.offsetWidth / 2}px`; }
+        if (corner === 'tl' || corner === 'tr' || corner === 'tc') d.style.top = m;
+        else if (corner === 'bl' || corner === 'br' || corner === 'bc') d.style.bottom = m;
+        else { d.style.top = '50%'; d.style.marginTop = `${-d.offsetHeight / 2}px`; }
+    }
+
+    function wireLauncherDrag() {
+        const dock = ui.launcherDock;
+        let down = null, dragging = false;
+        const onMove = (e) => {
+            if (!down) return;
+            if (!dragging) {
+                if (Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5) return;
+                dragging = true;
+                dock.classList.add('dragging');
+            }
+            const w = dock.offsetWidth, h = dock.offsetHeight;
+            const left = Math.max(0, Math.min(e.clientX - down.offX, window.innerWidth - w));
+            const top = Math.max(0, Math.min(e.clientY - down.offY, window.innerHeight - h));
+            dock.style.right = dock.style.bottom = 'auto';
+            dock.style.marginLeft = dock.style.marginTop = '0';
+            dock.style.left = `${left}px`;
+            dock.style.top = `${top}px`;
+        };
+        const onUp = () => {
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', onUp, true);
+            window.removeEventListener('pointercancel', onUp, true);
+            if (!down) return;
+            const wasDragging = dragging;
+            down = null; dragging = false;
+            dock.classList.remove('dragging');
+            if (!wasDragging) return;
+            const r = dock.getBoundingClientRect();
+            const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            const W = window.innerWidth, H = window.innerHeight;
+            const hz = cx < W / 3 ? 'l' : cx > W * 2 / 3 ? 'r' : 'c';
+            const vz = cy < H / 3 ? 't' : cy > H * 2 / 3 ? 'b' : 'c';
+            let corner;
+            if (hz !== 'c' && vz !== 'c') corner = vz + hz;
+            else if (vz === 'c' && hz !== 'c') corner = hz + 'c';
+            else if (hz === 'c' && vz !== 'c') corner = vz + 'c';
+            else {
+                const dl = cx, dr = W - cx, dt = cy, db = H - cy;
+                const min = Math.min(dl, dr, dt, db);
+                corner = min === dt ? 'tc' : min === db ? 'bc' : min === dl ? 'lc' : 'rc';
+            }
+            applyLauncherCorner(corner);
+            Store.set('sdb_launcher_corner', corner);
+            dock._suppressClick = true;
+            setTimeout(() => { dock._suppressClick = false; }, 0);
+        };
+        dock.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
+            const r = dock.getBoundingClientRect();
+            down = { x: e.clientX, y: e.clientY, offX: e.clientX - r.left, offY: e.clientY - r.top };
+            dragging = false;
+            window.addEventListener('pointermove', onMove, true);
+            window.addEventListener('pointerup', onUp, true);
+            window.addEventListener('pointercancel', onUp, true);
+        });
+        dock.addEventListener('click', (e) => {
+            if (dock._suppressClick) { e.stopPropagation(); e.preventDefault(); }
+        }, true);
+    }
+
     function setOpen(open, animate = true) {
-        const chrome = [ui.panel, ui.launcher, ui.btnGuide, ui.btnSettings, ui.backdrop];
+        const chrome = [ui.panel, ui.launcherDock, ui.backdrop];
         if (!animate) {
             chrome.forEach((el) => el.classList.add('no-anim'));
         } else if (open && ui.panel.classList.contains('closed')) {
             void ui.panel.offsetWidth;
         }
         ui.panel.classList.toggle('closed', !open);
-        ui.launcher.classList.toggle('closed', open);
-        ui.btnGuide.classList.toggle('closed', open);
-        ui.btnSettings.classList.toggle('closed', open);
+        ui.launcherDock.classList.toggle('closed', open);
         ui.backdrop.classList.toggle('closed', !open);
         Store.set('sdb_ui_open', open);
         if (!animate) {
@@ -4442,7 +4434,8 @@ render();
         const r = btn.getBoundingClientRect();
         const width = menu.offsetWidth || 148;
         menu.style.top = `${r.bottom + 6}px`;
-        menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+        const left = menu._alignRight ? r.right - width : r.left;
+        menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - width - 8))}px`;
     }
     function closePopMenu(menu) {
         if (!menu || menu.classList.contains('closed')) return;
@@ -4452,13 +4445,14 @@ render();
     }
     function openPop(menu) {
         if (openPopMenu && openPopMenu !== menu) closePopMenu(openPopMenu);
-        positionMenu(menu._btn, menu);
         menu.classList.remove('closed');
+        positionMenu(menu._btn, menu);
         menu._btn.setAttribute('aria-expanded', 'true');
         openPopMenu = menu;
     }
-    function anchorMenu(btn, menu) {
+    function anchorMenu(btn, menu, alignRight) {
         menu._btn = btn;
+        menu._alignRight = !!alignRight;
         ui.root.appendChild(menu);
         btn.addEventListener('click', () => menu.classList.contains('closed') ? openPop(menu) : closePopMenu(menu));
     }
@@ -4574,6 +4568,8 @@ render();
         ui.launcher.addEventListener('click', () => setOpen(true));
         ui.backdrop.addEventListener('click', () => setOpen(false));
         wireDrag();
+        applyLauncherCorner(Store.get('sdb_launcher_corner', 'bl'));
+        wireLauncherDrag();
         wireKeybinds();
 
         ui.themeSel.addEventListener('change', () => {
@@ -4588,6 +4584,36 @@ render();
         });
         ui.gridZoomSel.addEventListener('change', () => applyGridZoom(parseFloat(ui.gridZoomSel.value)));
         ui.btnRollTheme.addEventListener('click', rollRandomTheme);
+        ui.themeCustomize.addEventListener('click', () => { closePopMenu(ui.themeMenu); openSettings('paneTheme'); });
+
+        ui.cardColorize.addEventListener('change', (e) => {
+            cardColorize = e.target.checked;
+            Store.set('sdb_card_colorize', cardColorize);
+            if (cardColorize && itemdbCfg.intent !== 'full') {
+                itemdbCfg.intent = 'full';
+                saveItemdbCfg();
+                const sel = shadowRoot.querySelector('#idbIntent');
+                if (sel) sel.value = 'full';
+                toast('Colored Cards on, scan to fetch colours');
+            }
+            scheduleUpdate();
+        });
+        ui.cardRarity.addEventListener('change', (e) => {
+            cardRarity = e.target.checked;
+            Store.set('sdb_card_rarity', cardRarity);
+            ui.root.classList.toggle('no-card-rarity', !cardRarity);
+        });
+        ui.shortValues.addEventListener('change', (e) => {
+            shortValues = e.target.checked;
+            Store.set('sdb_short_values', shortValues);
+            refreshColMins();
+            scheduleUpdate();
+        });
+        ui.linkImages.addEventListener('change', (e) => {
+            linkImages = e.target.checked;
+            Store.set('sdb_link_images', linkImages);
+            ui.root.classList.toggle('link-icons', linkImages);
+        });
 
         ui.btnItemdbCfg.addEventListener('click', () => openSettings());
         ui.btnPaste.addEventListener('click', openPasteList);
@@ -4657,6 +4683,7 @@ render();
         anchorMenu(ui.btnFlags, ui.flagMenu);
         anchorMenu(ui.btnView, ui.viewMenu);
         anchorMenu(ui.btnTools, ui.toolsMenu);
+        anchorMenu(ui.btnTheme, ui.themeMenu, true);
         ui.tsvCopy.addEventListener('click', copyViewAsTSV);
         ui.toolsMenu.addEventListener('click', (e) => { if (e.target.closest('button')) closePopMenu(ui.toolsMenu); });
         shadowRoot.addEventListener('mousedown', (e) => {
@@ -4879,10 +4906,6 @@ render();
                 <button class="tab" data-pane="paneItemdb">ItemDB</button>
             </div>
             <div class="tabpane" id="paneItemdb">
-                <!-- Moved here from the toolbar, where the slot now carries Deposit inventory.
-                     Saves on change like the General tab's switches — Save below is for the
-                     numeric fields, and a switch that needed a second click to stick would be
-                     the one thing on this tab that silently didn't. -->
                 <label class="switch" title="Price items from ItemDB in batches as the scan runs">
                     <input type="checkbox" id="idbEnabled"${fetchItemdb ? ' checked' : ''}><span class="track"></span>ItemDB prices
                 </label>
@@ -4934,7 +4957,6 @@ render();
                 </div>
             </div>
             <div class="tabpane" id="paneTheme">
-                <div class="modal-hint">The palette below is what <b>Apply</b> puts on screen. Anything you leave alone falls back to the Dark preset. Give it a name and <b>Save</b> it to keep it. Saved themes appear in the theme selector at the top of the panel. The switches that were here now live under <b>General</b>.</div>
                 <label class="modal-row">Saved themes
                     <select id="tvPresetSel" title="Load one of your saved themes"></select>
                 </label>
@@ -4961,24 +4983,6 @@ render();
                 </label>
             </div>
             <div class="tabpane" id="paneGeneral">
-                <div class="modal-subhead">Appearance</div>
-                <!-- Two per line: four switches on four lines read as a longer list than it is,
-                     and each label is short enough that a second column costs nothing. -->
-                <div class="switch-grid">
-                    <label class="switch" title="Tint card backgrounds with the item&#x2019;s dominant colour from ItemDB &#xB7; card view only &#xB7; raises the ItemDB detail level to Full, which is where the colour comes from">
-                        <input type="checkbox" id="cardColorize"${cardColorize ? ' checked' : ''}><span class="track"></span>Colored Cards
-                    </label>
-                    <label class="switch" title="Show the item&#x2019;s rarity on its thumbnail in card view &#xB7; the row grid keeps its Rarity column either way">
-                        <input type="checkbox" id="cardRarity"${cardRarity ? ' checked' : ''}><span class="track"></span>Card Rarity
-                    </label>
-                    <label class="switch" title="Round large numbers in the row grid and the totals bar &#xB7; 1,234,567 becomes 1.2M, with the exact figure on hover &#xB7; cards always round">
-                        <input type="checkbox" id="shortValues"${shortValues ? ' checked' : ''}><span class="track"></span>Simplify Numbers
-                    </label>
-                    <label class="switch" title="Show the four lookup links as the original icons instead of the DB / JN / TP / AH block">
-                        <input type="checkbox" id="linkImages"${linkImages ? ' checked' : ''}><span class="track"></span>Link Images
-                    </label>
-                </div>
-
                 <div class="modal-subhead">Manage Data</div>
                 <div class="modal-hint">Save a full backup of your box, prices and settings, or restore one. Import replaces matching data and reloads the page. Your Neopets SDB itself is never touched.</div>
                 <div class="io-group">
@@ -4992,13 +4996,11 @@ render();
                     <input type="checkbox" id="backupUseLz"${backupUseLz ? ' checked' : ''}><span class="track"></span>Use LZ-String Compression (saves space for large boxes)
                 </label>
 
-                <!-- Deliberately outside the danger box: this one is recoverable with a single
-                     press of Reprice, and burying it in the red block would overstate it. -->
                 <div class="modal-row-block">
                     <div class="modal-hint">Clears prices only, keeps other data. <b>&#x21BB; Reprice</b> fills them back in.</div>
                     <div class="modal-actions"><button class="btn" id="btnClearPrices">Clear price data</button></div>
                 </div>
-                <div class="danger">
+                <div class="danger-box">
                     <div class="modal-head">WARNING</div>
                     <div class="modal-hint">This will permanently delete ALL stored data for SDBCrawler:
                         snapshots, queues, filters, settings, hidden rows, column widths, and every
@@ -5008,11 +5010,6 @@ render();
                 </div>
             </div>
             <div class="modal-actions">
-                <!-- Per-tab actions live in the footer, not in their pane. The panes reserve a
-                     scrollbar gutter, so a button inside one sits ~10px left of the footer's
-                     Close and reads as misaligned; in the footer the two share an edge. The
-                     theme buttons are here for a second reason — inside a scrolling pane they
-                     sat below the fold. -->
                 <span class="ma-group gone" id="idbActions">
                     <button class="btn" id="idbSave" title="Save the detail level, chunk size and both delays">Save</button>
                 </span>
@@ -5029,7 +5026,6 @@ render();
 
         overlay.querySelector('#setClose').addEventListener('click', close);
 
-        // The footer's action group follows the active tab, so its buttons never show against an unrelated pane.
         const paneActions = [['#idbActions', 'paneItemdb'], ['#keysActions', 'paneKeys'],
                              ['#themeActions', 'paneTheme']]
             .map(([sel, pane]) => [overlay.querySelector(sel), pane]);
@@ -5161,38 +5157,6 @@ render();
             saveCustomBinds();
             renderCkOptions();
             renderCkList();
-        });
-
-        overlay.querySelector('#cardColorize').addEventListener('change', (e) => {
-            cardColorize = e.target.checked;
-            Store.set('sdb_card_colorize', cardColorize);
-            if (cardColorize && itemdbCfg.intent !== 'full') {
-                itemdbCfg.intent = 'full';
-                saveItemdbCfg();
-                const sel = overlay.querySelector('#idbIntent');
-                if (sel) sel.value = 'full';
-                toast('Colored Cards on, scan to fetch colours');
-            }
-            scheduleUpdate();
-        });
-
-        overlay.querySelector('#cardRarity').addEventListener('change', (e) => {
-            cardRarity = e.target.checked;
-            Store.set('sdb_card_rarity', cardRarity);
-            ui.root.classList.toggle('no-card-rarity', !cardRarity);
-        });
-
-        overlay.querySelector('#shortValues').addEventListener('change', (e) => {
-            shortValues = e.target.checked;
-            Store.set('sdb_short_values', shortValues);
-            refreshColMins();
-            scheduleUpdate();
-        });
-
-        overlay.querySelector('#linkImages').addEventListener('change', (e) => {
-            linkImages = e.target.checked;
-            Store.set('sdb_link_images', linkImages);
-            ui.root.classList.toggle('link-icons', linkImages);
         });
 
         overlay.querySelector('#backupUseLz').addEventListener('change', (e) => {
@@ -5532,7 +5496,7 @@ render();
                         <li><b>Copy as TSV</b> (bind a key in Settings &#xB7; Keybinds) copies the current view for pasting into a spreadsheet.</li>
                         <li><b>${icon('download')} Download</b>: the current view as <b>Excel</b>, <b>HTML</b>,
                             <b>CSV</b> or <b>JSON</b> (hover for columns).</li>
-                        <li><b>Backup / restore</b>: under <b>${icon('gear')} Settings &#xB7; General &#xB7; Manage Data</b>
+                        <li><b>Backup / restore</b>: under <b>${icon('gear')} Settings &#xB7; General &#xB7; Manage Data</b> 
                             <b>Export a Backup</b> saves a full JSON of settings + data; <b>Import Backup</b> (pick a file
                             or drop one) loads it straight back into storage and reloads.</li>
                     </ul>
@@ -5857,10 +5821,9 @@ render();
             close();
         });
         overlay.querySelector('#exHtml').addEventListener('click', () => {
-            const rows = exportRows();
-            const html = toStandaloneHTML(rows);
+            const html = toStandaloneHTML(state.view);
             downloadFile(`sdb-export-${stamp()}.html`, 'text/html', html);
-            toast(`Downloaded ${nf.format(rows.length)} items as HTML`);
+            toast(`Downloaded ${nf.format(state.view.length)} items as HTML`);
             close();
         });
         overlay.querySelector('#exCsv').addEventListener('click', () => {
@@ -6099,11 +6062,6 @@ render();
         const el = document.createElement('div');
         el.className = 'card';
         el.innerHTML = `
-            <!-- Rarity is anchored to the thumbnail, not to the card, hence the wrapper —
-                 it needs a positioned ancestor that is the image rather than the card. It
-                 does not sit in a row of its own: that row was the last thing separating the
-                 description from the stats block, and removing it is what lets the stats
-                 bottom-align across a grid row. -->
             <div class="c-top">
                 <span class="thumbwrap">
                     <img loading="lazy" decoding="async" alt="" title="Click to copy item name">
